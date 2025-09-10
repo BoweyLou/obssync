@@ -1,0 +1,144 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obs-tools"
+authors = [
+    {name = "obs-tools contributors"}
+]
+description = "Advanced task management system with bidirectional sync between Obsidian and Apple Reminders"
+readme = "README.md"
+requires-python = ">=3.8"
+keywords = ["obsidian", "reminders", "tasks", "sync", "productivity", "markdown"]
+license = {text = "MIT"}
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop", 
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9", 
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Office/Business :: Scheduling",
+    "Topic :: Text Processing :: Markup",
+    "Topic :: Utilities",
+]
+dependencies = []
+dynamic = ["version"]
+
+[project.optional-dependencies]
+macos = [
+    "pyobjc>=8.0",
+    "pyobjc-framework-EventKit>=8.0",
+]
+optimization = [
+    "scipy>=1.5.0",
+    "munkres>=1.1.0",
+]
+validation = [
+    "jsonschema>=3.0.0",
+]
+dev = [
+    "pytest>=6.0",
+    "pytest-cov>=2.10", 
+    "black>=21.0",
+    "mypy>=0.900",
+]
+
+[project.scripts]
+obs-tools = "obs_tools:main"
+obs-app = "obs_tools:main"
+obs-sync = "obs_tools:main" 
+obs-collect = "obs_tools:main"
+
+[project.urls]
+Homepage = "https://github.com/obs-tools/obs-tools"
+Repository = "https://github.com/obs-tools/obs-tools"
+Issues = "https://github.com/obs-tools/obs-tools/issues"
+Documentation = "https://github.com/obs-tools/obs-tools/blob/main/README.md"
+
+[tool.setuptools]
+packages = ["lib", "tui", "obs_tools", "obs_tools.commands"]
+py-modules = ["obs_tools"]
+
+[tool.setuptools.package-data]
+lib = ["*.py"]
+tui = ["*.py"] 
+"obs_tools" = ["*.py"]
+"obs_tools.commands" = ["*.py"]
+"" = ["Resources/schemas/*.json", "bin/*"]
+
+[tool.setuptools_scm]
+write_to = "_version.py"
+
+[tool.black]
+line-length = 120
+target-version = ['py38', 'py39', 'py310', 'py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+    \.git
+    | \.venv
+    | \.recovery_backups
+    | build
+    | dist
+)/
+'''
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "objc.*",
+    "EventKit.*",
+    "scipy.*",
+    "jsonschema.*",
+    "munkres.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--strict-markers",
+    "--strict-config", 
+    "--verbose",
+    "--tb=short",
+    "--durations=10",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "macos: marks tests that require macOS/EventKit (skipped by default on non-Darwin)",
+    "eventkit: marks tests that require EventKit framework",
+    "integration: marks tests that require external dependencies",
+    "unit: marks fast unit tests (default category)",
+    "cache: marks tests for cache functionality",
+    "matching: marks tests for matching algorithms",
+    "io: marks tests for I/O operations",
+    "concurrency: marks tests for concurrent operations",
+    "scipy_optional: marks tests that behave differently with/without scipy",
+    "munkres_optional: marks tests that behave differently with/without munkres",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]

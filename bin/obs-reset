@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+exec ~/Library/Application\ Support/obs-tools/venv/bin/python3 "$SCRIPT_DIR/obs_tools.py" reset run "$@"
+
