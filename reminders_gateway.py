@@ -87,6 +87,14 @@ class UpdateResult:
 
 
 @dataclass
+class DeleteResult:
+    """Result of a delete operation."""
+    success: bool
+    errors: List[str]
+    reminder_id: Optional[str] = None
+
+
+@dataclass
 class GatewayStats:
     """Statistics for gateway operations."""
     store_initializations: int = 0
@@ -148,18 +156,20 @@ class RemindersGateway:
         try:
             # Import EventKit and Foundation frameworks
             from EventKit import (
-                EKEventStore, EKEntityTypeReminder, EKAuthorizationStatusAuthorized
+                EKEventStore, EKEntityTypeReminder, EKAuthorizationStatusAuthorized, EKReminder
             )
-            from Foundation import NSRunLoop, NSDate, NSCalendar, NSDateComponents
+            from Foundation import NSRunLoop, NSDate, NSCalendar, NSDateComponents, NSURL
             
             # Store classes for later use
             self._EKEventStore = EKEventStore
             self._EKEntityTypeReminder = EKEntityTypeReminder
             self._EKAuthorizationStatusAuthorized = EKAuthorizationStatusAuthorized
+            self._EKReminder = EKReminder
             self._NSRunLoop = NSRunLoop
             self._NSDate = NSDate
             self._NSCalendar = NSCalendar
             self._NSDateComponents = NSDateComponents
+            self._NSURL = NSURL
             
             self._eventkit_available = True
             self.logger.debug("EventKit imported successfully")
@@ -613,10 +623,14 @@ class RemindersGateway:
         try:
             # Title update
             if fields.get("title_to_rem"):
-                title_value = fields.get("title_value") or reminder_dict.get("description", "")
-                old_title = str(reminder.title() or "")
-                if old_title != title_value:
-                    changes_applied.append(ReminderChange("title", old_title, title_value))
+                title_value = fields.get("title_value")
+                if title_value is not None:  # Only update if we have an explicit value
+                    # Handle empty titles by providing a default
+                    if not str(title_value).strip():
+                        title_value = "Untitled Task"
+                    old_title = str(reminder.title() or "")
+                    if old_title != title_value:
+                        changes_applied.append(ReminderChange("title", old_title, title_value))
                     if not dry_run:
                         reminder.setTitle_(title_value)
             
@@ -663,13 +677,13 @@ class RemindersGateway:
             # Priority update
             if fields.get("priority_to_rem"):
                 priority = reminder_dict.get("priority")
-                priority_map = {"high": 9, "medium": 5, "low": 1}
+                priority_map = {"high": 1, "medium": 5, "low": 9}
                 new_priority_val = priority_map.get(priority, 0)
                 
                 old_priority_val = reminder.priority()
-                old_priority = ("high" if old_priority_val >= 6 
+                old_priority = ("high" if old_priority_val <= 1 
                               else "medium" if old_priority_val == 5 
-                              else "low" if old_priority_val >= 1 
+                              else "low" if old_priority_val >= 9 
                               else None)
                 
                 if old_priority != priority:
@@ -738,6 +752,168 @@ class RemindersGateway:
             self.stats.errors_by_type['save_exception'] = self.stats.errors_by_type.get('save_exception', 0) + 1
             self.logger.error(f"Reminder save exception: {e}")
             return False
+
+    def delete_reminder(
+        self,
+        item_id: str,
+        calendar_id: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> DeleteResult:
+        """Delete a reminder by EventKit item identifier.
+        - Searches across calendars when `calendar_id` is not provided.
+        - Honors dry_run to report success without mutation.
+        - Returns DeleteResult with errors collected on failure.
+        """
+        if not item_id:
+            return DeleteResult(False, ["Missing item_id"], None)
+
+        try:
+            reminder = self.find_reminder_by_id(item_id, calendar_id if calendar_id else None)
+            if not reminder:
+                self.stats.errors_by_type['reminder_not_found'] = self.stats.errors_by_type.get('reminder_not_found', 0) + 1
+                return DeleteResult(False, [f"Reminder not found: {item_id}"], item_id)
+
+            if dry_run:
+                return DeleteResult(True, [], item_id)
+
+            store = self._get_store()
+            result = store.removeReminder_commit_error_(reminder, True, None)
+            if isinstance(result, tuple) and len(result) == 2:
+                success, error = result
+            elif isinstance(result, bool):
+                success = result
+                error = None
+            else:
+                success = bool(result)
+                error = None
+
+            if success and not error:
+                return DeleteResult(True, [], item_id)
+
+            # Failure: format error
+            msg = "Unknown delete error"
+            try:
+                if error is not None:
+                    if hasattr(error, 'localizedDescription'):
+                        msg = str(error.localizedDescription())
+                    elif hasattr(error, 'description'):
+                        msg = str(error.description())
+                    else:
+                        msg = str(error)
+            except Exception:
+                pass
+            self.stats.errors_by_type['delete_failed'] = self.stats.errors_by_type.get('delete_failed', 0) + 1
+            return DeleteResult(False, [msg], item_id)
+
+        except AuthorizationError as e:
+            self.stats.errors_by_type['auth_denied'] = self.stats.errors_by_type.get('auth_denied', 0) + 1
+            return DeleteResult(False, [str(e)], item_id)
+        except EventKitImportError as e:
+            self.stats.errors_by_type['import_error'] = self.stats.errors_by_type.get('import_error', 0) + 1
+            return DeleteResult(False, [str(e)], item_id)
+        except RemindersError as e:
+            self.stats.errors_by_type['delete_exception'] = self.stats.errors_by_type.get('delete_exception', 0) + 1
+            return DeleteResult(False, [str(e)], item_id)
+    
+    def create_reminder(
+        self,
+        title: str,
+        calendar_id: Optional[str] = None,
+        properties: Optional[Dict[str, Any]] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Create a new reminder in Apple Reminders.
+        
+        Args:
+            title: The reminder title
+            calendar_id: Target calendar ID (optional)
+            properties: Dict of additional properties (due_date, priority, notes, url)
+            
+        Returns:
+            Dict with created reminder info, or None if failed
+        """
+        try:
+            self._ensure_eventkit_imports()
+            store = self._get_store()
+            if not store:
+                return None
+            
+            # Create new reminder
+            reminder = self._EKReminder.reminderWithEventStore_(store)
+            # Handle empty titles by providing a default
+            if not str(title).strip():
+                title = "Untitled Task"
+            reminder.setTitle_(title)
+            
+            # Set calendar if specified
+            if calendar_id:
+                calendar = None
+                # Find the calendar by ID
+                calendars = store.calendarsForEntityType_(self._EKEntityTypeReminder)
+                for cal in calendars:
+                    if cal.calendarIdentifier() == calendar_id:
+                        calendar = cal
+                        break
+                
+                if calendar:
+                    reminder.setCalendar_(calendar)
+                else:
+                    self.logger.warning(f"Calendar {calendar_id} not found, using default")
+            else:
+                # Use default calendar
+                default_calendar = store.defaultCalendarForNewReminders()
+                if default_calendar:
+                    reminder.setCalendar_(default_calendar)
+            
+            # Set properties if provided
+            if properties:
+                # Due date
+                if properties.get('due_date'):
+                    try:
+                        due_date = properties['due_date']
+                        y, m, d = map(int, due_date[:10].split("-"))
+                        components = self._NSDateComponents.alloc().init()
+                        components.setYear_(y)
+                        components.setMonth_(m)
+                        components.setDay_(d)
+                        reminder.setDueDateComponents_(components)
+                    except Exception as e:
+                        self.logger.warning(f"Failed to set due date: {e}")
+                
+                # Priority (1=high, 5=medium, 9=low)
+                if properties.get('priority'):
+                    reminder.setPriority_(int(properties['priority']))
+                
+                # Notes
+                if properties.get('notes'):
+                    reminder.setNotes_(str(properties['notes']))
+                
+                # URL
+                if properties.get('url'):
+                    try:
+                        url = self._NSURL.URLWithString_(str(properties['url']))
+                        if url:
+                            reminder.setURL_(url)
+                    except Exception as e:
+                        self.logger.warning(f"Failed to set URL: {e}")
+            
+            # Save the reminder
+            success = self._save_reminder(reminder)
+            if not success:
+                return None
+            
+            # Return created reminder info
+            return {
+                "uuid": reminder.calendarItemIdentifier(),
+                "title": reminder.title() or "",
+                "calendar_id": reminder.calendar().calendarIdentifier() if reminder.calendar() else None,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create reminder: {e}")
+            self.stats.errors_by_type['create_error'] = self.stats.errors_by_type.get('create_error', 0) + 1
+            return None
     
     def _create_cache_key(
         self, 
@@ -826,27 +1002,44 @@ def to_iso_dt(nsdate) -> Optional[str]:
 
 
 def components_to_iso(components) -> Optional[str]:
-    """Convert NSDateComponents to ISO string."""
+    """Convert NSDateComponents to ISO string.
+
+    For due dates and similar date-only fields, we treat them as date-only
+    to avoid timezone conversion issues. This ensures that a due date of
+    2025-09-19 appears consistently across all timezones.
+    """
     if components is None:
         return None
     try:
-        from Foundation import NSCalendar
-        cal = NSCalendar.currentCalendar()
-        dt = cal.dateFromComponents_(components)
-        if dt is None:
-            return None
-        return to_iso_dt(dt)
-    except Exception:
-        # Fallback: attempt to compose manually
-        try:
-            y = components.year()
-            m = components.month()
-            d = components.day()
-            if y and m and d:
-                hh = components.hour() or 0
-                mm = components.minute() or 0
-                ss = components.second() or 0
+        y = components.year()
+        m = components.month()
+        d = components.day()
+        if y and m and d:
+            # For date-only components (like due dates), only extract date part
+            # This avoids timezone conversion that would shift dates
+            hh = components.hour() if hasattr(components, 'hour') and components.hour() else None
+            mm = components.minute() if hasattr(components, 'minute') and components.minute() else None
+            ss = components.second() if hasattr(components, 'second') and components.second() else None
+
+            # If no time components are set, treat as date-only
+            if hh is None and mm is None and ss is None:
+                return f"{y:04d}-{m:02d}-{d:02d}"
+            else:
+                # If time components are present, include them in UTC
+                hh = hh or 0
+                mm = mm or 0
+                ss = ss or 0
                 return datetime(y, m, d, hh, mm, ss, tzinfo=timezone.utc).isoformat()
+        return None
+    except Exception:
+        # Original fallback for compatibility
+        try:
+            from Foundation import NSCalendar
+            cal = NSCalendar.currentCalendar()
+            dt = cal.dateFromComponents_(components)
+            if dt is None:
+                return None
+            return to_iso_dt(dt)
         except Exception:
             pass
         return None
