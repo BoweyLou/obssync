@@ -45,8 +45,11 @@ from typing import List
 from obs_tools.commands import (
     collect_obsidian_tasks,
     collect_reminders_tasks,
+    collect_calendar_events,
+    sync_calendar_to_daily_note,
     build_sync_links,
     sync_links_apply,
+    create_missing_counterparts,
     discover_obsidian_vaults,
     discover_reminders_lists,
     find_duplicate_tasks,
@@ -57,6 +60,9 @@ from obs_tools.commands import (
     app_tui,
     setup,
 )
+
+# Import configuration utilities
+from app_config import get_path
 
 
 def default_home() -> str:
@@ -155,6 +161,24 @@ def main(argv: List[str]) -> int:
     sp_tasks_collect.add_argument("--output", default=os.path.expanduser("~/.config/obsidian_tasks_index.json"))
     sp_tasks_collect.add_argument("--ignore-common", action="store_true")
 
+    # calendar tools
+    sp_calendar = subparsers.add_parser("calendar", help="Calendar tools")
+    sp_calendar_sub = sp_calendar.add_subparsers(dest="action")
+    sp_calendar_collect = sp_calendar_sub.add_parser("collect", help="Collect calendar events")
+    sp_calendar_collect.add_argument("--date", help="Date to collect events for (YYYY-MM-DD, default: today)")
+    sp_calendar_collect.add_argument("--calendars", nargs="*", help="Calendar IDs to include")
+    sp_calendar_collect.add_argument("--output", help="Output file for events JSON")
+    sp_calendar_collect.add_argument("--format", choices=["json", "markdown"], default="markdown")
+    sp_calendar_collect.add_argument("--list-calendars", action="store_true", help="List available calendars")
+    sp_calendar_collect.add_argument("--verbose", "-v", action="store_true")
+
+    sp_calendar_sync = sp_calendar_sub.add_parser("sync", help="Sync calendar events to daily note")
+    sp_calendar_sync.add_argument("--date", help="Date to sync events for (YYYY-MM-DD, default: today)")
+    sp_calendar_sync.add_argument("--vault-path", help="Path to Obsidian vault (auto-detected if not specified)")
+    sp_calendar_sync.add_argument("--calendars", nargs="*", help="Calendar IDs to include")
+    sp_calendar_sync.add_argument("--dry-run", action="store_true", help="Show what would be done without making changes")
+    sp_calendar_sync.add_argument("--verbose", "-v", action="store_true")
+
     # app tui (TUI launcher)
     sp_app = subparsers.add_parser("app", help="Application UI")
     sp_app_sub = sp_app.add_subparsers(dest="action")
@@ -250,6 +274,18 @@ def main(argv: List[str]) -> int:
     sp_sync_apply.add_argument("--refresh", action="store_true", help="Run sync update (refresh indices + links) before applying")
     sp_sync_apply.add_argument("--ignore-common", action="store_true", help="Ignore common dirs (.obsidian, .recovery_backups, .trash) during refresh")
 
+    sp_sync_create = sp_sync_sub.add_parser("create", help="Create missing counterpart tasks")
+    sp_sync_create.add_argument("--obs", default=get_path("obsidian_index"))
+    sp_sync_create.add_argument("--rem", default=get_path("reminders_index"))
+    sp_sync_create.add_argument("--links", default=get_path("links"))
+    sp_sync_create.add_argument("--apply", action="store_true", help="Actually create counterparts (default: dry-run)")
+    sp_sync_create.add_argument("--direction", choices=["both", "obs-to-rem", "rem-to-obs"], default="both", help="Direction of counterpart creation")
+    sp_sync_create.add_argument("--include-done", action="store_true", help="Include completed tasks")
+    sp_sync_create.add_argument("--since", type=int, metavar="DAYS", help="Only process tasks modified within N days")
+    sp_sync_create.add_argument("--max", type=int, metavar="N", help="Maximum number of counterparts to create")
+    sp_sync_create.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    sp_sync_create.add_argument("--plan-out", help="Save creation plan to JSON file")
+
     args, passthrough = parser.parse_known_args(argv)
 
     if not args.tool:
@@ -265,8 +301,14 @@ def main(argv: List[str]) -> int:
             print("The Reminders tool requires macOS (EventKit).")
             return 1
         ensure_eventkit(pybin)
-    # Sync apply also needs EventKit for Reminders writes
-    if args.tool == "sync" and getattr(args, 'action', None) == "apply":
+    # Calendar tools also need EventKit
+    if args.tool == "calendar":
+        if platform.system() != "Darwin":
+            print("The Calendar tool requires macOS (EventKit).")
+            return 1
+        ensure_eventkit(pybin)
+    # Sync apply and create also need EventKit for Reminders writes
+    if args.tool == "sync" and getattr(args, 'action', None) in ("apply", "create"):
         if platform.system() == "Darwin":
             ensure_eventkit(pybin)
 
@@ -294,6 +336,34 @@ def main(argv: List[str]) -> int:
         if args.ignore_common:
             cmd_args.append("--ignore-common")
         return run_command_module(collect_obsidian_tasks.main, cmd_args)
+    elif args.tool == "calendar" and args.action == "collect":
+        cmd_args = []
+        if args.date:
+            cmd_args.extend(["--date", args.date])
+        if args.calendars:
+            cmd_args.extend(["--calendars"] + args.calendars)
+        if args.output:
+            cmd_args.extend(["--output", args.output])
+        if args.format:
+            cmd_args.extend(["--format", args.format])
+        if args.list_calendars:
+            cmd_args.append("--list-calendars")
+        if args.verbose:
+            cmd_args.append("--verbose")
+        return run_command_module(collect_calendar_events.main, cmd_args)
+    elif args.tool == "calendar" and args.action == "sync":
+        cmd_args = []
+        if args.date:
+            cmd_args.extend(["--date", args.date])
+        if args.vault_path:
+            cmd_args.extend(["--vault-path", args.vault_path])
+        if args.calendars:
+            cmd_args.extend(["--calendars"] + args.calendars)
+        if args.dry_run:
+            cmd_args.append("--dry-run")
+        if args.verbose:
+            cmd_args.append("--verbose")
+        return run_command_module(sync_calendar_to_daily_note.main, cmd_args)
     elif args.tool == "sync" and args.action == "suggest":
         cmd_args = ["--obs", args.obs, "--rem", args.rem, "--output", args.output, "--min-score", str(args.min_score), "--days-tol", str(args.days_tol)]
         if args.include_done:
@@ -395,6 +465,21 @@ def main(argv: List[str]) -> int:
         if args.changes_out:
             cmd_args.extend(["--changes-out", args.changes_out])
         return run_command_module(sync_links_apply.main, cmd_args)
+    elif args.tool == "sync" and args.action == "create":
+        cmd_args = ["--obs", args.obs, "--rem", args.rem, "--links", args.links, "--direction", args.direction]
+        if args.apply:
+            cmd_args.append("--apply")
+        if args.include_done:
+            cmd_args.append("--include-done")
+        if args.since:
+            cmd_args.extend(["--since", str(args.since)])
+        if getattr(args, 'max', None):
+            cmd_args.extend(["--max", str(args.max)])
+        if args.verbose:
+            cmd_args.append("--verbose")
+        if args.plan_out:
+            cmd_args.extend(["--plan-out", args.plan_out])
+        return run_command_module(create_missing_counterparts.main, cmd_args)
     elif args.tool == "setup":
         cmd_args = []
         if args.list:

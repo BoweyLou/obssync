@@ -28,16 +28,20 @@ class TUIController:
         # Application state
         self.menu = [
             "Update All",
+            "Update All and Apply",
             "Discover Vaults", 
             "Collect Obsidian",
             "Discover Reminders",
             "Collect Reminders",
+            "Sync Calendar to Daily Note",
             "Build Links",
             "Link Review",
             "Sync Links",
+            "Create Missing Counterparts",
             "Duplication Finder",
             "Fix Block IDs",
             "Restore Last Fix",
+            "Log Viewer",
             "Reset (dangerous)",
             "Setup Dependencies",
             "Settings",
@@ -46,9 +50,22 @@ class TUIController:
         self.selected = 0
         self.prefs, self.paths = cfg.load_app_config()
         self.log: List[str] = []
+        self.log_max_lines = 500  # Prevent unbounded log growth
         self.status = "Ready"
+        
+        # Data caching infrastructure
+        self._data_cache = {
+            'obs': {'data': None, 'mtime': 0},
+            'rem': {'data': None, 'mtime': 0}, 
+            'links': {'data': None, 'mtime': 0}
+        }
+        self._last_diff_cache = None
+        self._last_diff_time = 0
         self.last_diff = {"obs": None, "rem": None, "links": None}
         self.last_link_changes = {"new": [], "replaced": []}
+        
+        # Centralized Python environment management
+        self._managed_python = os.path.expanduser("~/Library/Application Support/obs-tools/venv/bin/python3")
         self._prev_link_pairs: set[tuple[str, str]] = set()
         
         # State management
@@ -56,14 +73,69 @@ class TUIController:
         self.is_busy = False
     
     def log_line(self, s: str):
-        """Add a line to the application log with timestamp."""
+        """Add a line to the application log with timestamp and bounds checking."""
         ts = time.strftime("%H:%M:%S")
-        line = f"[{ts}] {s}"
+        # Safely convert input to string to avoid format string errors with dict objects
+        safe_s = str(s) if s is not None else "None"
+        line = f"[{ts}] {safe_s}"
         self.log.append(line)
-        if len(self.log) > 200:
-            self.log.pop(0)
+        
+        # Trim log if it exceeds maximum lines (more efficient than pop(0))
+        if len(self.log) > self.log_max_lines:
+            self.log = self.log[-self.log_max_lines:]
+            
         self.prefs.last_summary = line
         cfg.save_app_config(self.prefs)
+    
+    def get_managed_python(self) -> str:
+        """Get the path to the managed Python environment with all dependencies."""
+        return self._managed_python
+    
+    def validate_eventkit_availability(self) -> bool:
+        """Validate that EventKit is available in the managed Python environment."""
+        try:
+            import subprocess
+            result = subprocess.run([
+                self._managed_python, "-c", 
+                "import EventKit; print('EventKit available')"
+            ], capture_output=True, text=True, timeout=10)
+            
+            if result.returncode == 0:
+                self.log_line("EventKit validation: Available and functional")
+                return True
+            else:
+                self.log_line(f"EventKit validation failed: {result.stderr.strip()}")
+                return False
+        except Exception as e:
+            self.log_line(f"EventKit validation error: {str(e)}")
+            return False
+    
+    def validate_sync_environment(self):
+        """Validate that the sync environment is properly configured."""
+        self.log_line("Validating sync environment...")
+        
+        # Check managed Python exists
+        if not os.path.exists(self._managed_python):
+            self.log_line(f"WARNING: Managed Python not found at {self._managed_python}")
+            self.log_line("Run 'Setup Dependencies' to install the managed environment")
+            return False
+            
+        # Validate EventKit availability
+        eventkit_ok = self.validate_eventkit_availability()
+        if not eventkit_ok:
+            self.log_line("WARNING: EventKit not available - Apple Reminders sync will fail")
+            self.log_line("Run 'Setup Dependencies' → 'Install macOS dependencies' to fix")
+            
+        return True
+    
+    def check_eventkit_before_reminders_operation(self, operation_name: str) -> bool:
+        """Check EventKit availability before Apple Reminders operations."""
+        if not self.validate_eventkit_availability():
+            self.log_line(f"Cannot run {operation_name}: EventKit not available")
+            self.log_line("Use 'Setup Dependencies' to install EventKit support")
+            self.status = f"Error: {operation_name} requires EventKit"
+            return False
+        return True
     
     def tail_component_logs(self, component: str, operation_name: str = None):
         """Tail recent logs from a component and add them to the TUI log."""
@@ -91,7 +163,7 @@ class TUIController:
             else:
                 self.log_line(f"No recent {component} logs found")
         except Exception as e:
-            self.log_line(f"Failed to tail {component} logs: {e}")
+            self.log_line(f"Failed to tail {component} logs: {str(e)}")
     
     def find_latest_run_summary(self, component: str) -> str:
         """Find the latest run summary file for a component."""
@@ -121,6 +193,29 @@ class TUIController:
         
         return None
     
+    def _get_current_vault_name(self) -> str:
+        """Get the name of the current default vault for display."""
+        try:
+            inbox_file = self.prefs.creation_defaults.obs_inbox_file
+            if not inbox_file or inbox_file == "~/Documents/Obsidian/Default/Tasks.md":
+                return "None (unconfigured)"
+            
+            # Load vault config to match path to name
+            vault_config_path = os.path.expanduser("~/.config/obsidian_vaults.json")
+            if os.path.exists(vault_config_path):
+                import json
+                with open(vault_config_path, 'r') as f:
+                    vaults = json.load(f)
+                
+                for vault in vaults:
+                    if inbox_file.startswith(vault['path']):
+                        return vault['name']
+            
+            # Fallback to just the basename
+            return os.path.basename(os.path.dirname(inbox_file)) if inbox_file else "None"
+        except:
+            return "Unknown"
+
     def get_current_state(self) -> Dict[str, Any]:
         """Get the current application state for rendering."""
         return {
@@ -131,7 +226,8 @@ class TUIController:
             'log': self.log,
             'status': self.status,
             'last_diff': self.last_diff,
-            'is_busy': self.is_busy
+            'is_busy': self.is_busy,
+            'current_vault': self._get_current_vault_name()
         }
     
     def handle_input(self) -> bool:
@@ -177,19 +273,23 @@ class TUIController:
         # Map menu items to handler methods
         handlers = {
             "Update All": self._do_update_all,
+            "Update All and Apply": self._do_update_all_and_apply,
             "Discover Vaults": self._do_discover_vaults,
             "Collect Obsidian": self._do_collect_obsidian,
             "Discover Reminders": self._do_discover_reminders,
             "Collect Reminders": self._do_collect_reminders,
+            "Sync Calendar to Daily Note": self._do_sync_calendar_to_daily_note,
             "Build Links": self._do_build_links,
             "Link Review": self._do_link_review,
             "Sync Links": self._do_sync_links,
+            "Create Missing Counterparts": self._do_create_missing_counterparts,
             "Duplication Finder": self._do_duplication_finder,
             "Fix Block IDs": self._do_fix_block_ids_interactive,
             "Restore Last Fix": self._do_restore_last_fix,
+            "Log Viewer": self._do_log_viewer,
             "Reset (dangerous)": self._do_reset_interactive,
             "Setup Dependencies": self._do_setup_dependencies,
-            "Settings": self._handle_settings,
+            "Settings": self._do_settings,
             "Quit": lambda: setattr(self, 'is_running', False)
         }
         
@@ -197,15 +297,187 @@ class TUIController:
         if handler:
             handler()
     
+    def _do_settings(self):
+        """Show the settings screen."""
+        self.view.show_settings_screen(self.prefs)
+        cfg.save_app_config(self.prefs)
+    
+    def _do_log_viewer(self):
+        """Show the log viewer modal."""
+        self.view.show_paged_content(self.log, title="Log Viewer")
+    
     def _do_update_all(self):
         """Run the complete update sequence."""
         self._do_collect_obsidian()
         self._do_collect_reminders()
         self._do_build_links()
     
+    def _do_update_all_and_apply(self):
+        """Run the complete update sequence and apply changes."""
+        if self.is_busy:
+            return
+            
+        # Validate EventKit before starting full update (includes Reminders operations)
+        if not self.check_eventkit_before_reminders_operation("Update All and Apply"):
+            return
+            
+        # Start the chain with Obsidian collection
+        self._do_collect_obsidian_for_chain()
+    
+    def _do_collect_obsidian_for_chain(self):
+        """Collect Obsidian tasks as part of the update-all-and-apply chain."""
+        if self.is_busy:
+            return
+            
+        self.is_busy = True
+        self.status = "Update All and Apply: Collecting Obsidian…"
+        
+        # Snapshot previous index for diff calculation
+        prev = self._load_index(self.paths["obsidian_index"])
+        
+        script_path = os.path.join(os.path.dirname(__file__), "..", "obs_tools", "commands", "collect_obsidian_tasks.py")
+        args = [
+            os.path.expanduser("~/Library/Application Support/obs-tools/venv/bin/python3"),
+            script_path,
+            "--use-config",
+            "--output", self.paths["obsidian_index"],
+        ]
+        if self.prefs.ignore_common:
+            args.append("--ignore-common")
+        
+        def completion_callback():
+            # Apply lifecycle prune/marking if configured
+            if self.prefs.prune_days is not None and self.prefs.prune_days >= 0:
+                from obs_tools.commands import update_indices_and_links as uil
+                total, missing, deleted = uil.apply_lifecycle(self.paths["obsidian_index"], self.prefs.prune_days)
+                if total:
+                    self.log_line(f"Obsidian lifecycle: missing+{missing}, deleted+{deleted}")
+            
+            # Calculate and log diff
+            curr = self._load_index(self.paths["obsidian_index"])
+            self.last_diff["obs"] = self._diff_index(prev, curr, system="obs")
+            count = self._count_tasks(self.paths["obsidian_index"])
+            self.log_line(f"Obsidian tasks: {count}")
+            
+            # Chain to next step: collect reminders
+            self.log_line("Chaining to reminders collection...")
+            self._do_collect_reminders_for_chain()
+        
+        self.service_manager.run_command(args, self.log_line, completion_callback)
+    
+    def _do_collect_reminders_for_chain(self):
+        """Collect Reminders tasks as part of the update-all-and-apply chain."""
+        self.status = "Update All and Apply: Collecting Reminders…"
+        
+        # Snapshot previous index for diff calculation
+        prev = self._load_index(self.paths["reminders_index"])
+        
+        script_path = os.path.join(os.path.dirname(__file__), "..", "obs_tools.py")
+        args = [
+            os.path.expanduser("~/Library/Application Support/obs-tools/venv/bin/python3"),
+            script_path, "reminders", "collect",
+            "--config", self.paths["reminders_lists"],
+            "--output", self.paths["reminders_index"],
+        ]
+        if self.prefs.ignore_common:
+            args.append("--ignore-common")
+        
+        def completion_callback():
+            # Apply lifecycle prune/marking if configured
+            if self.prefs.prune_days is not None and self.prefs.prune_days >= 0:
+                from obs_tools.commands import update_indices_and_links as uil
+                total, missing, deleted = uil.apply_lifecycle(self.paths["reminders_index"], self.prefs.prune_days)
+                if total:
+                    self.log_line(f"Reminders lifecycle: missing+{missing}, deleted+{deleted}")
+            
+            # Calculate and log diff
+            curr = self._load_index(self.paths["reminders_index"])
+            self.last_diff["rem"] = self._diff_index(prev, curr, system="rem")
+            count = self._count_tasks(self.paths["reminders_index"])
+            self.log_line(f"Reminders tasks: {count}")
+            
+            # Chain to next step: build links
+            self.log_line("Chaining to link building...")
+            self._do_build_links_for_chain()
+        
+        self.service_manager.run_command(args, self.log_line, completion_callback)
+    
+    def _do_build_links_for_chain(self):
+        """Build links as part of the update-all-and-apply chain."""
+        self.status = "Update All and Apply: Building links…"
+        
+        # Snapshot previous links for diff calculation
+        prev = self._load_index(self.paths["links"])
+        
+        script_path = os.path.join(os.path.dirname(__file__), "..", "obs_tools.py")
+        args = [
+            os.path.expanduser("~/Library/Application Support/obs-tools/venv/bin/python3"),
+            script_path, "sync", "suggest",
+            "--obs", self.paths["obsidian_index"],
+            "--rem", self.paths["reminders_index"],
+            "--links", self.paths["links"],
+            "--min-score", str(self.prefs.min_score),
+            "--days-tolerance", str(self.prefs.days_tolerance),
+        ]
+        if self.prefs.include_done:
+            args.append("--include-done")
+        
+        def completion_callback():
+            # Calculate and log diff
+            curr = self._load_index(self.paths["links"])
+            self.last_diff["links"] = self._diff_index(prev, curr, system="links")
+            count = self._count_links(self.paths["links"])
+            self.log_line(f"Sync links: {count}")
+            
+            # Chain to final step: apply sync changes
+            self.log_line("Chaining to sync apply...")
+            self._do_apply_sync_for_chain()
+        
+        self.service_manager.run_command(args, self.log_line, completion_callback)
+    
+    def _do_apply_sync_for_chain(self):
+        """Apply sync changes as the final step of the update-all-and-apply chain."""
+        link_count = self._count_links(self.paths["links"])
+        self.status = f"Update All and Apply: Applying {link_count} sync changes (may take 10+ min for large sets)…"
+        
+        script_path = os.path.join(os.path.dirname(__file__), "..", "obs_tools.py")
+        args = [
+            self.get_managed_python(),
+            "-u",
+            script_path, "sync", "apply",
+            "--obs", self.paths["obsidian_index"],
+            "--rem", self.paths["reminders_index"],
+            "--links", self.paths["links"],
+        ]
+        
+        if self.prefs.ignore_common:
+            args.append("--ignore-common")
+        
+        # Apply mode - create backup
+        base = os.path.expanduser("~/.config/obs-tools/backups")
+        os.makedirs(base, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        changes = os.path.join(base, f"sync_apply_{ts}.json")
+        args.extend(["--apply", "--changes-out", changes])
+        
+        def completion_callback():
+            # Tail recent component logs
+            self.tail_component_logs("sync_links_apply", "Sync apply")
+            
+            # Find and display run summary path
+            summary_path = self.find_latest_run_summary("sync_links_apply")
+            if summary_path:
+                self.status = f"Update All and Apply Complete - Summary: {os.path.basename(summary_path)}"
+            else:
+                self.status = "Update All and Apply Complete"
+                
+            self.is_busy = False
+        
+        self.service_manager.run_command(args, self.log_line, completion_callback)
+    
     def _do_discover_vaults(self):
         """Run vault discovery interactively."""
-        script_path = os.path.join(os.path.dirname(__file__), "..", "discover_obsidian_vaults.py")
+        script_path = os.path.join(os.path.dirname(__file__), "..", "obs_tools", "commands", "discover_obsidian_vaults.py")
         args = [
             os.path.expanduser("~/Library/Application Support/obs-tools/venv/bin/python3"),
             script_path
@@ -234,7 +506,7 @@ class TUIController:
         # Snapshot previous index for diff calculation
         prev = self._load_index(self.paths["obsidian_index"])
         
-        script_path = os.path.join(os.path.dirname(__file__), "..", "collect_obsidian_tasks.py")
+        script_path = os.path.join(os.path.dirname(__file__), "..", "obs_tools", "commands", "collect_obsidian_tasks.py")
         args = [
             os.path.expanduser("~/Library/Application Support/obs-tools/venv/bin/python3"),
             script_path,
@@ -247,7 +519,7 @@ class TUIController:
         def completion_callback():
             # Apply lifecycle prune/marking if configured
             if self.prefs.prune_days is not None and self.prefs.prune_days >= 0:
-                import update_indices_and_links as uil
+                from obs_tools.commands import update_indices_and_links as uil
                 total, missing, deleted = uil.apply_lifecycle(self.paths["obsidian_index"], self.prefs.prune_days)
                 if total:
                     self.log_line(f"Obsidian lifecycle: missing+{missing}, deleted+{deleted}")
@@ -277,6 +549,10 @@ class TUIController:
         if self.is_busy:
             return
             
+        # Validate EventKit before collecting from Apple Reminders
+        if not self.check_eventkit_before_reminders_operation("Collect Reminders"):
+            return
+            
         self.is_busy = True
         self.status = "Collecting Reminders…"
         
@@ -294,7 +570,7 @@ class TUIController:
         def completion_callback():
             # Apply lifecycle prune/marking if configured
             if self.prefs.prune_days is not None and self.prefs.prune_days >= 0:
-                import update_indices_and_links as uil
+                from obs_tools.commands import update_indices_and_links as uil
                 total, missing, deleted = uil.apply_lifecycle(self.paths["reminders_index"], self.prefs.prune_days)
                 if total:
                     self.log_line(f"Reminders lifecycle: missing+{missing}, deleted+{deleted}")
@@ -318,7 +594,32 @@ class TUIController:
             self.is_busy = False
         
         self.service_manager.run_command(args, self.log_line, completion_callback)
-    
+
+    def _do_sync_calendar_to_daily_note(self):
+        """Sync today's calendar events to daily note."""
+        if self.is_busy:
+            return
+
+        # Validate EventKit before accessing Apple Calendar
+        if not self.check_eventkit_before_reminders_operation("Sync Calendar to Daily Note"):
+            return
+
+        self.is_busy = True
+        self.status = "Syncing calendar events to daily note…"
+
+        script_path = os.path.join(os.path.dirname(__file__), "..", "obs_tools.py")
+        args = [
+            os.path.expanduser("~/Library/Application Support/obs-tools/venv/bin/python3"),
+            script_path, "calendar", "sync",
+            "--verbose"
+        ]
+
+        def completion_callback():
+            self.status = "Calendar sync complete"
+            self.is_busy = False
+
+        self.service_manager.run_command(args, self.log_line, completion_callback)
+
     def _do_build_links(self):
         """Build sync links."""
         if self.is_busy:
@@ -330,7 +631,7 @@ class TUIController:
         prev_links = self._count_links(self.paths["links"])
         prev_list = self._load_links(self.paths["links"])
         
-        script_path = os.path.join(os.path.dirname(__file__), "..", "build_sync_links.py")
+        script_path = os.path.join(os.path.dirname(__file__), "..", "obs_tools", "commands", "build_sync_links.py")
         args = [
             os.path.expanduser("~/Library/Application Support/obs-tools/venv/bin/python3"),
             script_path,
@@ -350,12 +651,14 @@ class TUIController:
             self.last_diff["links"] = links - prev_links
             
             # Fallback to in-memory baseline if file read before build was empty
-            if not prev_list and self._prev_link_pairs:
-                prev_list = []
+            # Create local copy to avoid NameError
+            baseline_list = prev_list
+            if not baseline_list and self._prev_link_pairs:
+                baseline_list = []
                 for ou, ru in self._prev_link_pairs:
-                    prev_list.append({"obs_uuid": ou, "rem_uuid": ru})
+                    baseline_list.append({"obs_uuid": ou, "rem_uuid": ru})
             
-            self.last_link_changes = self._diff_links(prev_list, curr_list)
+            self.last_link_changes = self._diff_links(baseline_list, curr_list)
             # Update in-memory baseline for next run
             self._prev_link_pairs = {(l.get('obs_uuid'), l.get('rem_uuid')) for l in curr_list if l.get('obs_uuid') and l.get('rem_uuid')}
             self.log_line(f"Links: {links}")
@@ -426,9 +729,17 @@ class TUIController:
         """Run sync operation (dry-run or apply)."""
         self.is_busy = True
         
+        # Show informative status with link count
+        link_count = self._count_links(self.paths["links"])
+        if mode == 'apply':
+            self.status = f"Sync Apply: Processing {link_count} links (EventKit operations may take time)…"
+        else:
+            self.status = f"Sync Dry-run: Analyzing {link_count} links…"
+        
         script_path = os.path.join(os.path.dirname(__file__), "..", "obs_tools.py")
         args = [
-            os.path.expanduser("~/Library/Application Support/obs-tools/venv/bin/python3"),
+            self.get_managed_python(),
+            "-u",
             script_path, "sync", "apply",
             "--obs", self.paths["obsidian_index"],
             "--rem", self.paths["reminders_index"],
@@ -510,7 +821,7 @@ class TUIController:
         
         mode = options[selection][1]
         
-        script_path = os.path.join(os.path.dirname(__file__), "..", "find_duplicate_tasks.py")
+        script_path = os.path.join(os.path.dirname(__file__), "..", "obs_tools", "commands", "find_duplicate_tasks.py")
         args = [
             os.path.expanduser("~/Library/Application Support/obs-tools/venv/bin/python3"),
             script_path,
@@ -577,7 +888,7 @@ class TUIController:
             return
         
         latest = max(files, key=lambda p: os.path.getmtime(p))
-        script_path = os.path.join(os.path.dirname(__file__), "..", "fix_obsidian_block_ids.py")
+        script_path = os.path.join(os.path.dirname(__file__), "..", "obs_tools", "commands", "fix_obsidian_block_ids.py")
         args = [
             os.path.expanduser("~/Library/Application Support/obs-tools/venv/bin/python3"),
             script_path, "--restore", latest,
@@ -663,45 +974,93 @@ class TUIController:
         
         self.status = "Ready"
     
-    def _handle_settings(self):
-        """Handle settings adjustment interface."""
-        self.status = "Settings: +/- score, </> tol, d toggle done, i toggle ignore, [/] prune- days, p toggle prune"
-        while True:
-            self.view.draw_main_screen(self.get_current_state())
-            ch = self.view.get_user_input()
-            if ch in (ord("q"), 27):
-                break
-            elif ch == ord("+"):
-                self.prefs.min_score = min(0.99, round(self.prefs.min_score + 0.05, 2))
-            elif ch == ord("-"):
-                self.prefs.min_score = max(0.0, round(self.prefs.min_score - 0.05, 2))
-            elif ch == ord("<"):
-                self.prefs.days_tolerance = max(0, self.prefs.days_tolerance - 1)
-            elif ch == ord(">"):
-                self.prefs.days_tolerance = min(30, self.prefs.days_tolerance + 1)
-            elif ch == ord("d"):
-                self.prefs.include_done = not self.prefs.include_done
-            elif ch == ord("i"):
-                self.prefs.ignore_common = not self.prefs.ignore_common
-            elif ch == ord("["):
-                # decrease prune days (min -1 = off)
-                if self.prefs.prune_days is None:
-                    self.prefs.prune_days = -1
-                self.prefs.prune_days = max(-1, self.prefs.prune_days - 1)
-            elif ch == ord("]"):
-                # increase prune days
-                if self.prefs.prune_days is None or self.prefs.prune_days < 0:
-                    self.prefs.prune_days = 7
-                else:
-                    self.prefs.prune_days = min(365, self.prefs.prune_days + 1)
-            elif ch == ord("p"):
-                # toggle prune on/off (default 7 days when turning on)
-                if self.prefs.prune_days is None or self.prefs.prune_days < 0:
-                    self.prefs.prune_days = 7
-                else:
-                    self.prefs.prune_days = -1
-            cfg.save_app_config(self.prefs)
-        self.status = "Ready"
+    
+    
+    def _handle_vault_selection(self):
+        """Handle vault selection for default inbox file."""
+        try:
+            # Load available vaults
+            vault_config_path = os.path.expanduser("~/.config/obsidian_vaults.json")
+            if not os.path.exists(vault_config_path):
+                self.log_line("No vaults found. Run 'Discover Vaults' first.")
+                return False
+            
+            import json
+            with open(vault_config_path, 'r') as f:
+                vaults = json.load(f)
+            
+            if not vaults:
+                self.log_line("No vaults configured. Run 'Discover Vaults' first.")
+                return False
+            
+            # Show vault selection interface
+            selected_vault = None
+            vault_names = [vault['name'] for vault in vaults]
+            selected_index = 0
+            
+            self.status = f"Select default vault for Reminders tasks (↑↓ navigate, Enter select, q cancel)"
+            
+            while True:
+                # Create display with current selection highlighted
+                vault_display = []
+                for i, name in enumerate(vault_names):
+                    if i == selected_index:
+                        vault_display.append(f"► {name}")
+                    else:
+                        vault_display.append(f"  {name}")
+                
+                # Temporarily update log for display
+                temp_log = self.log[:]
+                self.log = self.log[-10:] + [
+                    "Select vault for default Reminders inbox:",
+                    ""
+                ] + vault_display + [
+                    "",
+                    "↑↓: Navigate  Enter: Select  q: Cancel"
+                ]
+                
+                self.view.draw_main_screen(self.get_current_state())
+                
+                # Restore original log
+                self.log = temp_log
+                
+                ch = self.view.get_user_input()
+                
+                if ch in (ord('q'), 27):  # q or ESC
+                    return False
+                elif ch == ord('\n') or ch == ord('\r') or ch == 10 or ch == 13:  # Enter
+                    selected_vault = vaults[selected_index]
+                    break
+                elif ch == 259 or ch == ord('k'):  # Up arrow or k
+                    selected_index = (selected_index - 1) % len(vault_names)
+                elif ch == 258 or ch == ord('j'):  # Down arrow or j  
+                    selected_index = (selected_index + 1) % len(vault_names)
+            
+            if selected_vault:
+                # Create Tasks.md path in selected vault
+                vault_path = selected_vault['path']
+                tasks_file_path = os.path.join(vault_path, "Tasks.md")
+                
+                # Create the Tasks.md file if it doesn't exist
+                if not os.path.exists(tasks_file_path):
+                    os.makedirs(os.path.dirname(tasks_file_path), exist_ok=True)
+                    with open(tasks_file_path, 'w') as f:
+                        f.write(f"# Tasks\n\nInbox for tasks created from Apple Reminders.\n\n")
+                    self.log_line(f"Created {tasks_file_path}")
+                
+                # Update configuration
+                self.prefs.creation_defaults.obs_inbox_file = tasks_file_path
+                cfg.save_app_config(self.prefs)
+                
+                self.log_line(f"Set default vault to '{selected_vault['name']}' -> Tasks.md")
+                self.status = f"Default vault set to '{selected_vault['name']}'"
+                return True
+                
+        except Exception as e:
+            self.log_line(f"Error selecting vault: {str(e)}")
+            return False
+        
+        return False
     
     def _handle_cancel_operation(self):
         """Handle cancel operation hotkey."""
@@ -720,38 +1079,56 @@ class TUIController:
             self.status = "No operation to cancel"
     
     # Helper methods
-    def _load_index(self, path: str):
-        """Load a task index file."""
+    def _load_cached_data(self, data_type: str, path: str):
+        """Load data with caching based on file modification time."""
         try:
+            # Get current file modification time
+            current_mtime = os.path.getmtime(path)
+            cache_entry = self._data_cache[data_type]
+            
+            # Return cached data if file hasn't changed
+            if cache_entry['data'] is not None and cache_entry['mtime'] >= current_mtime:
+                return cache_entry['data']
+            
+            # Load fresh data
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            
+            # Update cache
+            cache_entry['data'] = data
+            cache_entry['mtime'] = current_mtime
+            
             return data
+            
         except Exception:
-            return {"meta": {}, "tasks": {}}
+            # Return cached data if available, otherwise empty
+            if self._data_cache[data_type]['data'] is not None:
+                return self._data_cache[data_type]['data']
+            return {"meta": {}, "tasks": {}} if data_type != 'links' else {"links": []}
+    
+    def _load_index(self, path: str):
+        """Load a task index file with caching."""
+        data_type = 'obs' if 'obsidian' in path else 'rem'
+        return self._load_cached_data(data_type, path)
     
     def _load_links(self, path: str):
-        """Load a links file."""
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data.get("links", []) or []
-        except Exception:
-            return []
+        """Load a links file with caching."""
+        data = self._load_cached_data('links', path)
+        return data.get("links", []) or []
     
     def _count_tasks(self, path: str) -> int:
-        """Count total tasks in an index file."""
+        """Count total tasks in an index file using cached data."""
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data_type = 'obs' if 'obsidian' in path else 'rem'
+            data = self._load_cached_data(data_type, path)
             return len(data.get("tasks", {}) or {})
         except Exception:
             return 0
 
     def _count_links(self, path: str) -> int:
-        """Count total links in a links file."""
+        """Count total links in a links file using cached data."""
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = self._load_cached_data('links', path)
             return len(data.get("links", []) or [])
         except Exception:
             return 0
@@ -830,3 +1207,218 @@ class TUIController:
             if old and (old.get("rem_uuid") != ru):
                 replaced.append((old, l))
         return {"new": new, "replaced": replaced}
+    
+    def _do_create_missing_counterparts(self):
+        """Interactive create missing counterparts tool."""
+        options = [
+            ("Dry-run (show what would be created)", "dry"),
+            ("Create Obsidian -> Reminders", "obs-to-rem"),
+            ("Create Reminders -> Obsidian", "rem-to-obs"),
+            ("Create both directions", "both"),
+            ("Cancel", None),
+        ]
+        
+        selection = self.view.show_selection_modal("Create Missing Counterparts", options)
+        if selection is None or options[selection][1] is None:
+            self.status = "Ready"
+            return
+        
+        mode = options[selection][1]
+        
+        # Get direction setting
+        if mode == "dry":
+            direction = "both"
+            apply_mode = False
+        else:
+            direction = mode
+            apply_mode = True
+        
+        # Ask for additional options if applying
+        if apply_mode:
+            confirm_options = [
+                ("Yes, create counterparts", True),
+                ("No, just show plan", False),
+                ("Cancel", None),
+            ]
+            
+            confirm_selection = self.view.show_selection_modal(
+                f"Create counterparts ({direction})?", 
+                confirm_options
+            )
+            if confirm_selection is None or confirm_options[confirm_selection][1] is None:
+                self.status = "Ready"
+                return
+            
+            apply_mode = confirm_options[confirm_selection][1]
+        
+        # Build command arguments
+        script_path = os.path.join(os.path.dirname(__file__), "..", "obs_tools.py")
+        args = [
+            os.path.expanduser("~/Library/Application Support/obs-tools/venv/bin/python3"),
+            script_path, "sync", "create",
+            "--obs", self.paths["obsidian_index"],
+            "--rem", self.paths["reminders_index"],
+            "--links", self.paths["links"],
+            "--direction", direction,
+        ]
+        
+        # Add apply flag if confirmed
+        if apply_mode:
+            args.append("--apply")
+            self.log_line(f"Creating missing counterparts ({direction} direction)")
+        else:
+            self.log_line(f"Creating missing counterparts plan ({direction} direction, dry-run)")
+        
+        # Add default filters from preferences
+        creation_defaults = self.prefs.creation_defaults
+        if creation_defaults.since_days > 0:
+            args.extend(["--since", str(creation_defaults.since_days)])
+        if creation_defaults.max_creates_per_run > 0:
+            args.extend(["--max", str(creation_defaults.max_creates_per_run)])
+        if creation_defaults.include_done:
+            args.append("--include-done")
+        
+        # Add verbose output
+        args.append("--verbose")
+        
+        # For dry-run mode, save plan to file so we can display it
+        plan_file = None
+        if not apply_mode:
+            import tempfile
+            plan_file = tempfile.mktemp(suffix=".txt", prefix="create_plan_")
+            args.extend(["--plan-out", plan_file])
+        
+        # Run the command
+        self.is_busy = True
+        
+        def completion_callback():
+            # If dry-run, show the plan
+            if not apply_mode and plan_file and os.path.exists(plan_file):
+                try:
+                    with open(plan_file, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    
+                    # Parse the plan into a more readable format
+                    lines = self._format_creation_plan(content)
+                    if lines:
+                        self.view.show_paged_content(lines, title="Creation Plan — press q to close, PgUp/PgDn to scroll")
+                    
+                    # Clean up temp file
+                    os.unlink(plan_file)
+                except Exception as e:
+                    self.log_line(f"Failed to display plan: {str(e)}")
+            
+            self._on_create_counterparts_complete(True, "", apply_mode)
+        
+        self.service_manager.run_command(args, self.log_line, completion_callback)
+    
+    def _format_creation_plan(self, content: str) -> List[str]:
+        """Format the creation plan into a more readable format."""
+        lines = []
+        
+        try:
+            # Try to parse as JSON first
+            import json
+            plan = json.loads(content)
+            
+            # Extract counts
+            obs_to_rem = plan.get("obs_to_rem", [])
+            rem_to_obs = plan.get("rem_to_obs", [])
+            obs_count = len(obs_to_rem)
+            rem_count = len(rem_to_obs)
+            total_count = obs_count + rem_count
+            
+            # Add summary header
+            lines.append("═══ CREATION PLAN SUMMARY ═══")
+            lines.append("")
+            lines.append(f"Direction: both")
+            lines.append(f"Obsidian → Reminders: {obs_count} tasks")
+            lines.append(f"Reminders → Obsidian: {rem_count} tasks") 
+            lines.append(f"Total creations: {total_count}")
+            lines.append("")
+            lines.append("═══ TASKS TO CREATE ═══")
+            lines.append("")
+            
+            # Process Obsidian → Reminders tasks
+            for i, task in enumerate(obs_to_rem[:50], 1):  # Limit to first 50 for readability
+                obs_task = task.get("obs_task", {})
+                description = obs_task.get("description", "No description")
+                
+                # Truncate long descriptions
+                if len(description) > 80:
+                    description = description[:80] + "..."
+                
+                # Get source location
+                vault_name = obs_task.get("vault", {}).get("name", "Unknown")
+                file_path = obs_task.get("file", {}).get("relative_path", "Unknown")
+                
+                lines.append(f"📝 Obs→Rem #{i}: {description}")
+                lines.append(f"   📁 {vault_name}: {file_path}")
+                
+            if len(obs_to_rem) > 50:
+                lines.append(f"   ... and {len(obs_to_rem) - 50} more Obsidian tasks")
+                
+            lines.append("")
+            
+            # Process Reminders → Obsidian tasks  
+            for i, task in enumerate(rem_to_obs[:50], 1):  # Limit to first 50 for readability
+                rem_task = task.get("rem_task", {})
+                description = rem_task.get("description", "No description")
+                
+                # Truncate long descriptions
+                if len(description) > 80:
+                    description = description[:80] + "..."
+                
+                # Get source location
+                list_name = rem_task.get("list", {}).get("name", "Unknown List")
+                
+                lines.append(f"📋 Rem→Obs #{i}: {description}")
+                lines.append(f"   📝 From list: {list_name}")
+                
+            if len(rem_to_obs) > 50:
+                lines.append(f"   ... and {len(rem_to_obs) - 50} more Reminders tasks")
+            
+            # Add footer with counts
+            lines.append("")
+            lines.append(f"Total: {obs_count} Obs→Rem + {rem_count} Rem→Obs = {total_count} tasks")
+            
+        except json.JSONDecodeError:
+            # Fallback to text parsing if JSON parsing fails
+            lines.append("═══ CREATION PLAN (RAW) ═══")
+            lines.append("")
+            lines.append("Failed to parse plan format - showing raw content:")
+            lines.append("")
+            lines.extend(content.split('\n')[:100])  # Limit to first 100 lines
+            
+        lines.append("")
+        lines.append("Press 'q' to close, PgUp/PgDn to scroll")
+        
+        return lines
+    
+    def _on_create_counterparts_complete(self, success: bool, summary: str, was_apply: bool):
+        """Handle completion of create missing counterparts operation."""
+        self.is_busy = False
+        
+        if success:
+            if was_apply:
+                self.log_line("✓ Missing counterparts created successfully")
+                # Optionally trigger a sync operation
+                sync_options = [
+                    ("Run field sync now", True),
+                    ("Skip sync for now", False),
+                ]
+                
+                sync_selection = self.view.show_selection_modal(
+                    "Counterparts created. Sync fields?", 
+                    sync_options
+                )
+                if sync_selection is not None and sync_options[sync_selection][1]:
+                    self._run_sync_operation('apply')
+            else:
+                self.log_line("✓ Missing counterparts plan completed")
+        else:
+            self.log_line("✗ Create missing counterparts failed")
+        
+        # Tail recent logs to show details
+        self.tail_component_logs("create_missing_counterparts", "creation")
+        self.status = "Ready"

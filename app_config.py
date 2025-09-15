@@ -116,6 +116,37 @@ def ensure_dirs(cfg_path: str = None) -> None:
         raise OSError(f"Path validation failed:\n" + "\n".join(errors))
 
 
+@dataclass 
+class CreationDefaults:
+    """Default settings for creating missing counterparts."""
+    obs_inbox_file: str = "~/Documents/Obsidian/Default/Tasks.md"
+    rem_default_calendar_id: Optional[str] = None
+    max_creates_per_run: int = 50
+    since_days: int = 30
+    include_done: bool = False
+
+
+@dataclass
+class CreationRule:
+    """Mapping rule for creating counterparts."""
+    pass
+
+
+@dataclass
+class ObsToRemRule(CreationRule):
+    """Rule for creating Reminders from Obsidian tasks."""
+    tag: str  # Obsidian tag like "#work"
+    calendar_id: str  # Target Reminders calendar ID
+
+
+@dataclass
+class RemToObsRule(CreationRule):
+    """Rule for creating Obsidian tasks from Reminders."""
+    list_name: str  # Reminders list name
+    target_file: str  # Target Obsidian file path
+    heading: Optional[str] = None  # Optional heading within file
+
+
 @dataclass
 class AppPreferences:
     min_score: float = 0.75
@@ -125,6 +156,22 @@ class AppPreferences:
     prune_days: int = -1  # <0 disables lifecycle prune
     last_summary: str = ""
 
+    # Calendar settings
+    calendar_vault_name: str = ""  # Selected vault for calendar sync (empty = auto-detect)
+
+    # Creation settings
+    creation_defaults: CreationDefaults = None
+    obs_to_rem_rules: list = None  # List[ObsToRemRule]
+    rem_to_obs_rules: list = None  # List[RemToObsRule]
+    
+    def __post_init__(self):
+        if self.creation_defaults is None:
+            self.creation_defaults = CreationDefaults()
+        if self.obs_to_rem_rules is None:
+            self.obs_to_rem_rules = []
+        if self.rem_to_obs_rules is None:
+            self.rem_to_obs_rules = []
+
 
 def load_app_config() -> tuple[AppPreferences, dict]:
     paths = default_paths()
@@ -132,6 +179,33 @@ def load_app_config() -> tuple[AppPreferences, dict]:
     try:
         with open(cfg_path, "r", encoding="utf-8") as f:
             data = json.load(f)
+        
+        # Load creation defaults
+        creation_defaults_data = data.get("creation_defaults", {})
+        creation_defaults = CreationDefaults(
+            obs_inbox_file=creation_defaults_data.get("obs_inbox_file", "~/Documents/Obsidian/Default/Tasks.md"),
+            rem_default_calendar_id=creation_defaults_data.get("rem_default_calendar_id"),
+            max_creates_per_run=creation_defaults_data.get("max_creates_per_run", 50),
+            since_days=creation_defaults_data.get("since_days", 30),
+            include_done=creation_defaults_data.get("include_done", False),
+        )
+        
+        # Load creation rules
+        obs_to_rem_rules = []
+        for rule_data in data.get("obs_to_rem_rules", []):
+            obs_to_rem_rules.append(ObsToRemRule(
+                tag=rule_data["tag"],
+                calendar_id=rule_data["calendar_id"]
+            ))
+        
+        rem_to_obs_rules = []
+        for rule_data in data.get("rem_to_obs_rules", []):
+            rem_to_obs_rules.append(RemToObsRule(
+                list_name=rule_data["list_name"],
+                target_file=rule_data["target_file"],
+                heading=rule_data.get("heading")
+            ))
+        
         prefs = AppPreferences(
             min_score=float(data.get("min_score", 0.75)),
             days_tolerance=int(data.get("days_tolerance", 1)),
@@ -139,6 +213,10 @@ def load_app_config() -> tuple[AppPreferences, dict]:
             ignore_common=bool(data.get("ignore_common", True)),
             prune_days=int(data.get("prune_days", -1)),
             last_summary=str(data.get("last_summary", "")),
+            calendar_vault_name=str(data.get("calendar_vault_name", "")),
+            creation_defaults=creation_defaults,
+            obs_to_rem_rules=obs_to_rem_rules,
+            rem_to_obs_rules=rem_to_obs_rules,
         )
         return prefs, paths
     except Exception:
@@ -149,6 +227,25 @@ def save_app_config(prefs: AppPreferences) -> None:
     paths = default_paths()
     cfg_path = paths["app_config"]
     ensure_dirs(cfg_path)
+    
+    # Convert creation rules to serializable format
+    obs_to_rem_rules_data = []
+    for rule in prefs.obs_to_rem_rules:
+        obs_to_rem_rules_data.append({
+            "tag": rule.tag,
+            "calendar_id": rule.calendar_id
+        })
+    
+    rem_to_obs_rules_data = []
+    for rule in prefs.rem_to_obs_rules:
+        rule_data = {
+            "list_name": rule.list_name,
+            "target_file": rule.target_file
+        }
+        if rule.heading:
+            rule_data["heading"] = rule.heading
+        rem_to_obs_rules_data.append(rule_data)
+    
     payload = {
         "min_score": prefs.min_score,
         "days_tolerance": prefs.days_tolerance,
@@ -156,6 +253,16 @@ def save_app_config(prefs: AppPreferences) -> None:
         "ignore_common": prefs.ignore_common,
         "prune_days": prefs.prune_days,
         "last_summary": prefs.last_summary,
+        "calendar_vault_name": prefs.calendar_vault_name,
+        "creation_defaults": {
+            "obs_inbox_file": prefs.creation_defaults.obs_inbox_file,
+            "rem_default_calendar_id": prefs.creation_defaults.rem_default_calendar_id,
+            "max_creates_per_run": prefs.creation_defaults.max_creates_per_run,
+            "since_days": prefs.creation_defaults.since_days,
+            "include_done": prefs.creation_defaults.include_done,
+        },
+        "obs_to_rem_rules": obs_to_rem_rules_data,
+        "rem_to_obs_rules": rem_to_obs_rules_data,
     }
     try:
         # Use safe write with locking for app config
