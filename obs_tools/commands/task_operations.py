@@ -446,7 +446,7 @@ class RemindersOperations:
                 changed = True
                 
             if 'priority' in changes:
-                priority_map = {'high': 9, 'medium': 5, 'low': 1, None: 0}
+                priority_map = {'high': 1, 'medium': 5, 'low': 9, None: 0}
                 reminder.setPriority_(priority_map.get(changes['priority'], 0))
                 changed = True
                 
@@ -522,7 +522,7 @@ class RemindersOperations:
                 reminder.setDueDateComponents_(comps)
                 
             if 'priority' in properties:
-                priority_map = {'high': 9, 'medium': 5, 'low': 1, None: 0}
+                priority_map = {'high': 1, 'medium': 5, 'low': 9, None: 0}
                 reminder.setPriority_(priority_map.get(properties['priority'], 0))
                 
             if 'completed' in properties:
@@ -566,6 +566,12 @@ class TaskOperations:
         self.verbose = verbose
         self.obsidian_ops = ObsidianOperations()
         self.reminders_ops = RemindersOperations()
+        # Use unified Reminders gateway for consistency across operations
+        try:
+            from reminders_gateway import RemindersGateway
+            self.gateway = RemindersGateway()
+        except Exception:
+            self.gateway = None
         self.changeset = Changeset()
         
     def delete_duplicates(self, duplicate_groups: Dict[str, List[List[str]]], obs_tasks: Dict, rem_tasks: Dict) -> Tuple[int, int]:
@@ -631,12 +637,28 @@ class TaskOperations:
                     print(f"Deleting Reminders duplicate: {task_data.get('description', '')[:50]}...")
                     
                 if not self.dry_run:
-                    result = self.reminders_ops.delete_reminder(item_id, calendar_id)
-                    if result.success:
-                        rem_removed += 1
-                        self.changeset.add_change('delete_reminder_task', task_uuid, result.details)
+                    # Prefer unified gateway when available
+                    if self.gateway is not None:
+                        gw_result = self.gateway.delete_reminder(item_id, calendar_id, dry_run=False)
+                        if gw_result.success:
+                            rem_removed += 1
+                            details = {
+                                "item_id": item_id,
+                                "calendar_id": calendar_id,
+                                "title": task_data.get('description', '')
+                            }
+                            self.changeset.add_change('delete_reminder_task', task_uuid, details)
+                        else:
+                            errs = "; ".join(gw_result.errors or [])
+                            print(f"Failed to delete Reminders task: {errs}")
                     else:
-                        print(f"Failed to delete Reminders task: {result.message}")
+                        # Fallback to legacy direct EventKit path
+                        result = self.reminders_ops.delete_reminder(item_id, calendar_id)
+                        if result.success:
+                            rem_removed += 1
+                            self.changeset.add_change('delete_reminder_task', task_uuid, result.details)
+                        else:
+                            print(f"Failed to delete Reminders task: {result.message}")
                 else:
                     rem_removed += 1
                     if self.verbose:
@@ -699,14 +721,30 @@ class TaskOperations:
                 print(f"Deleting Reminders task: {task_data.get('description', '')[:50]}...")
                 
             if not self.dry_run:
-                result = self.reminders_ops.delete_reminder(item_id, calendar_id)
-                if result.success:
-                    rem_removed += 1
-                    self.changeset.add_change('delete_reminder_task', task_uuid, result.details)
-                    if self.verbose:
-                        print(f"  ✓ {result.message}")
+                if self.gateway is not None:
+                    gw_result = self.gateway.delete_reminder(item_id, calendar_id, dry_run=False)
+                    if gw_result.success:
+                        rem_removed += 1
+                        details = {
+                            "item_id": item_id,
+                            "calendar_id": calendar_id,
+                            "title": task_data.get('description', '')
+                        }
+                        self.changeset.add_change('delete_reminder_task', task_uuid, details)
+                        if self.verbose:
+                            print("  ✓ Deleted via RemindersGateway")
+                    else:
+                        errs = "; ".join(gw_result.errors or [])
+                        print(f"  ✗ Failed: {errs}")
                 else:
-                    print(f"  ✗ Failed: {result.message}")
+                    result = self.reminders_ops.delete_reminder(item_id, calendar_id)
+                    if result.success:
+                        rem_removed += 1
+                        self.changeset.add_change('delete_reminder_task', task_uuid, result.details)
+                        if self.verbose:
+                            print(f"  ✓ {result.message}")
+                    else:
+                        print(f"  ✗ Failed: {result.message}")
             else:
                 rem_removed += 1
                 if self.verbose:
@@ -763,7 +801,7 @@ def main(argv: list[str] = None) -> int:
         default_backup = os.path.expanduser('~/.config/obs-tools/backups/task_operations.json')
     
     parser = argparse.ArgumentParser(description="Perform physical operations on Obsidian and Reminders tasks")
-    parser.add_argument('action', choices=['delete-duplicates', 'update-tasks', 'create-tasks'], 
+    parser.add_argument('action', choices=['delete-duplicates'], 
                        help='Action to perform')
     parser.add_argument('--obs', default=default_obs,
                        help='Path to Obsidian tasks index')
@@ -826,9 +864,7 @@ def main(argv: list[str] = None) -> int:
             operations.save_changeset(args.changeset_out)
             print(f"  Changeset saved to: {args.changeset_out}")
             
-    else:
-        print(f"Action '{args.action}' not yet implemented")
-        return 1
+    # All valid actions are now implemented above
         
     return 0
 

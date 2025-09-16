@@ -17,12 +17,23 @@ import argparse
 import json
 import os
 import platform
-import subprocess
+import sys
 from typing import Dict, Tuple
 from datetime import datetime, timezone
 
-from . import collect_obsidian_tasks as cot  # local module
-from . import build_sync_links as bsl        # local module
+# Import configuration and modules
+# This module should be run via obs_tools.py launcher, not directly
+try:
+    # Package-relative imports when run as a module
+    from . import collect_obsidian_tasks as cot
+    from . import build_sync_links as bsl
+    from . import collect_reminders_tasks as crt
+except ImportError:
+    # Fallback for direct script execution (deprecated - use obs_tools.py instead)
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+    import obs_tools.commands.collect_obsidian_tasks as cot
+    import obs_tools.commands.build_sync_links as bsl
+    import obs_tools.commands.collect_reminders_tasks as crt
 
 # Import centralized path configuration
 from app_config import get_path
@@ -54,20 +65,21 @@ def run_obsidian_collect(obs_cfg: str, obs_out: str, ignore_common: bool) -> int
 
 
 def run_reminders_collect(rem_cfg: str, rem_out: str) -> int:
-    # Use launcher to ensure managed venv + EventKit
-    here = os.path.dirname(os.path.abspath(__file__))
-    cmd = [
-        "python3",
-        os.path.join(here, "obs_tools.py"),
-        "reminders",
-        "collect",
-        "--config",
-        rem_cfg,
-        "--output",
-        rem_out,
-    ]
-    proc = subprocess.run(cmd)
-    return proc.returncode
+    """Run the Reminders collector directly as a function call.
+
+    Note: EventKit dependencies must be available. When running via obs_tools.py,
+    these are automatically installed in the managed venv.
+    """
+    args = ["--use-config", "--config", rem_cfg, "--output", rem_out]
+    try:
+        return crt.main(args)
+    except ImportError as e:
+        # If EventKit is not available, provide helpful error message
+        if "EventKit" in str(e) or "objc" in str(e):
+            print(f"Error: EventKit dependencies not available: {e}", file=sys.stderr)
+            print("Please run via 'python3 obs_tools.py' to ensure dependencies are installed.", file=sys.stderr)
+            return 1
+        raise
 
 
 def run_links_build(obs_out: str, rem_out: str, links_out: str, min_score: float, days_tol: int, include_done: bool) -> int:

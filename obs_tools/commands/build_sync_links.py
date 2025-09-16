@@ -54,20 +54,30 @@ from typing import Dict, List, Optional, Tuple
 import sys
 import logging
 
-# Import safe I/O utilities
-from lib.safe_io import (
-    file_lock, 
-    safe_write_json_with_lock, 
-    generate_run_id, 
-    ensure_run_id_in_meta, 
-    check_concurrent_access
-)
-
-# Import observability utilities
-from lib.observability import get_logger
-
-# Import centralized path configuration
-from app_config import get_path
+# Import safe I/O utilities and configuration
+try:
+    # When run as a module from obs_tools
+    from lib.safe_io import (
+        file_lock,
+        safe_write_json_with_lock,
+        generate_run_id,
+        ensure_run_id_in_meta,
+        check_concurrent_access
+    )
+    from lib.observability import get_logger
+    from app_config import get_path
+except ImportError:
+    # Fallback for direct script execution (though this should be avoided)
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+    from lib.safe_io import (
+        file_lock,
+        safe_write_json_with_lock,
+        generate_run_id,
+        ensure_run_id_in_meta,
+        check_concurrent_access
+    )
+    from lib.observability import get_logger
+    from app_config import get_path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

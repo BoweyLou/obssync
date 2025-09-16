@@ -29,6 +29,7 @@ class TUIController:
         self.menu = [
             "Update All",
             "Update All and Apply",
+            "Quick Sync (Create + Apply)",
             "Discover Vaults", 
             "Collect Obsidian",
             "Discover Reminders",
@@ -71,6 +72,17 @@ class TUIController:
         # State management
         self.is_running = True
         self.is_busy = False
+
+        # Progress tracking for multi-step operations
+        self.current_operation = None
+        self.operation_steps = []
+        self.current_step = 0
+        self.operation_start_time = None
+
+        # Completion summaries for status bar
+        self.last_completion = None
+        self.last_completion_time = 0
+        self.completion_display_duration = 10  # Show completion for 10 seconds
     
     def log_line(self, s: str):
         """Add a line to the application log with timestamp and bounds checking."""
@@ -171,7 +183,7 @@ class TUIController:
             logs_dir = os.path.expanduser("~/.config/obs-tools/logs")
             if not os.path.isdir(logs_dir):
                 return None
-            
+
             # Find run summary files for this component
             summary_files = []
             for filename in os.listdir(logs_dir):
@@ -182,17 +194,161 @@ class TUIController:
                         summary_files.append((mtime, filepath))
                     except OSError:
                         continue
-            
+
             if summary_files:
                 # Sort by modification time (newest first) and return the most recent
                 summary_files.sort(reverse=True)
                 return summary_files[0][1]
-            
+
         except Exception:
             pass
-        
+
         return None
-    
+
+    def parse_run_summary(self, summary_path: str) -> Dict[str, Any]:
+        """Parse run summary JSON and extract key metrics."""
+        try:
+            if not summary_path or not os.path.exists(summary_path):
+                return None
+
+            from lib.safe_io import safe_load_json
+            summary = safe_load_json(summary_path)
+
+            if not summary:
+                return None
+
+            # Extract key information
+            result = {
+                'operation': summary.get('operation', 'unknown'),
+                'success': summary.get('success', False),
+                'duration_ms': summary.get('duration_ms', 0),
+                'error': summary.get('error_message'),
+                'input_counts': summary.get('input_counts', {}),
+                'output_counts': summary.get('output_counts', {}),
+                'performance': summary.get('performance_metrics', {})
+            }
+
+            return result
+        except Exception as e:
+            self.log_line(f"Error parsing run summary: {str(e)}")
+            return None
+
+    def format_completion_summary(self, component: str, operation_name: str = None) -> str:
+        """Create a concise completion summary from the latest run summary."""
+        summary_path = self.find_latest_run_summary(component)
+
+        if not summary_path:
+            return None
+
+        summary = self.parse_run_summary(summary_path)
+        if not summary:
+            return None
+
+        # Build concise message
+        op_name = operation_name or summary['operation']
+        duration_s = summary['duration_ms'] / 1000.0
+
+        if summary['success']:
+            msg_parts = [f"✓ {op_name} ({duration_s:.1f}s)"]
+
+            # Add key output counts
+            output = summary['output_counts']
+            if 'tasks' in output:
+                msg_parts.append(f"{output['tasks']} tasks")
+            elif 'created' in output and 'updated' in output:
+                created = output.get('created', 0)
+                updated = output.get('updated', 0)
+                if created + updated > 0:
+                    msg_parts.append(f"+{created}/{updated} created/updated")
+            elif 'new_links' in output:
+                msg_parts.append(f"{output['new_links']} new links")
+
+            # Add performance metrics if notable
+            perf = summary['performance']
+            if perf.get('cache_hit_rate'):
+                hit_rate = perf['cache_hit_rate'] * 100
+                if hit_rate > 90:
+                    msg_parts.append(f"{hit_rate:.0f}% cache")
+
+            return " - ".join(msg_parts)
+        else:
+            error_msg = summary.get('error', 'unknown error')
+            # Truncate long error messages
+            if len(error_msg) > 50:
+                error_msg = error_msg[:47] + "..."
+            return f"✗ {op_name} failed: {error_msg}"
+
+    def start_multi_step_operation(self, name: str, steps: List[str]):
+        """Start tracking a multi-step operation."""
+        self.current_operation = name
+        self.operation_steps = steps
+        self.current_step = 0
+        self.operation_start_time = time.time()
+        self.status = f"{name}: {steps[0]}…"
+        self.log_line(f"Starting {name} ({len(steps)} steps)")
+
+    def advance_operation_step(self, step_name: str = None):
+        """Move to the next step in a multi-step operation."""
+        if not self.current_operation:
+            return
+
+        self.current_step += 1
+        if self.current_step < len(self.operation_steps):
+            next_step = step_name or self.operation_steps[self.current_step]
+            elapsed = time.time() - self.operation_start_time
+            self.status = f"{self.current_operation} [{self.current_step+1}/{len(self.operation_steps)}]: {next_step}… ({elapsed:.1f}s)"
+            self.log_line(f"Step {self.current_step+1}/{len(self.operation_steps)}: {next_step}")
+
+    def complete_multi_step_operation(self, summary: str = None):
+        """Mark a multi-step operation as complete."""
+        if not self.current_operation:
+            return
+
+        elapsed = time.time() - self.operation_start_time
+        op_name = self.current_operation
+
+        if summary:
+            self.log_line(f"{op_name} complete ({elapsed:.1f}s): {summary}")
+        else:
+            self.log_line(f"{op_name} complete ({elapsed:.1f}s)")
+
+        self.current_operation = None
+        self.operation_steps = []
+        self.current_step = 0
+        self.operation_start_time = None
+
+    def get_operation_progress(self) -> Dict[str, Any]:
+        """Get current operation progress information."""
+        if not self.current_operation:
+            return None
+
+        elapsed = time.time() - self.operation_start_time if self.operation_start_time else 0
+        return {
+            'name': self.current_operation,
+            'current_step': self.current_step + 1,
+            'total_steps': len(self.operation_steps),
+            'step_name': self.operation_steps[self.current_step] if self.current_step < len(self.operation_steps) else 'Complete',
+            'elapsed_seconds': elapsed,
+            'progress': (self.current_step + 1) / len(self.operation_steps) if self.operation_steps else 0
+        }
+
+    def set_completion_summary(self, summary: str):
+        """Set a completion summary to display in the status bar."""
+        self.last_completion = summary
+        self.last_completion_time = time.time()
+
+    def get_display_status(self) -> str:
+        """Get the current status to display, including recent completions."""
+        # Check if we should show a recent completion
+        if self.last_completion and not self.is_busy:
+            elapsed = time.time() - self.last_completion_time
+            if elapsed < self.completion_display_duration:
+                remaining = self.completion_display_duration - elapsed
+                return f"{self.last_completion} (showing for {remaining:.0f}s)"
+
+        # Otherwise return the current status
+        return self.status
+
     def _get_current_vault_name(self) -> str:
         """Get the name of the current default vault for display."""
         try:
@@ -218,17 +374,25 @@ class TUIController:
 
     def get_current_state(self) -> Dict[str, Any]:
         """Get the current application state for rendering."""
-        return {
+        # Include progress information if available
+        state = {
             'menu': self.menu,
             'selected': self.selected,
             'prefs': self.prefs,
             'paths': self.paths,
             'log': self.log,
-            'status': self.status,
+            'status': self.get_display_status(),  # Use new method with completion summaries
             'last_diff': self.last_diff,
             'is_busy': self.is_busy,
             'current_vault': self._get_current_vault_name()
         }
+
+        # Add progress information if a multi-step operation is running
+        progress = self.get_operation_progress()
+        if progress:
+            state['operation_progress'] = progress
+
+        return state
     
     def handle_input(self) -> bool:
         """
@@ -274,6 +438,7 @@ class TUIController:
         handlers = {
             "Update All": self._do_update_all,
             "Update All and Apply": self._do_update_all_and_apply,
+            "Quick Sync (Create + Apply)": self._do_quick_sync,
             "Discover Vaults": self._do_discover_vaults,
             "Collect Obsidian": self._do_collect_obsidian,
             "Discover Reminders": self._do_discover_reminders,
@@ -364,6 +529,208 @@ class TUIController:
             self._do_collect_reminders_for_chain()
         
         self.service_manager.run_command(args, self.log_line, completion_callback)
+
+    def _do_quick_sync(self):
+        """One-step flow: collect → build links → plan create → ensure anchors → create → apply sync."""
+        if self.is_busy:
+            return
+        # Validate EventKit before starting (needed for create/apply)
+        if not self.check_eventkit_before_reminders_operation("Quick Sync"):
+            return
+
+        self.is_busy = True
+
+        # Initialize multi-step progress tracking
+        steps = [
+            "Collecting Obsidian",
+            "Collecting Reminders",
+            "Building links",
+            "Planning creates",
+            "Ensuring anchors",
+            "Refreshing Obsidian",
+            "Re-planning creates",
+            "Creating counterparts",
+            "Applying sync"
+        ]
+        self.start_multi_step_operation("Quick Sync", steps)
+
+        script_collect_obs = os.path.join(os.path.dirname(__file__), "..", "obs_tools", "commands", "collect_obsidian_tasks.py")
+        args_obs = [
+            self.get_managed_python(),
+            script_collect_obs,
+            "--use-config",
+            "--output", self.paths["obsidian_index"],
+        ]
+        if self.prefs.ignore_common:
+            args_obs.append("--ignore-common")
+
+        def after_collect_obs():
+            # Update diff stats for Obsidian
+            curr = self._load_index(self.paths["obsidian_index"])
+            prev_obs = self._load_index(self.paths["obsidian_index"])
+            self.last_diff["obs"] = self._diff_index(prev_obs, curr, system="obs")
+            count = self._count_tasks(self.paths["obsidian_index"])
+            self.log_line(f"Obsidian tasks: {count}")
+
+            # Advance to next step
+            self.advance_operation_step("Collecting Reminders")
+            script = os.path.join(os.path.dirname(__file__), "..", "obs_tools.py")
+            args = [
+                self.get_managed_python(), "-u", script, "reminders", "collect",
+                "--config", self.paths["reminders_lists"],
+                "--output", self.paths["reminders_index"],
+            ]
+            # Use hybrid collector for better performance
+            args.append("--use-hybrid")
+            if self.prefs.ignore_common:
+                args.append("--ignore-common")
+
+            def after_collect_rem():
+                # Update diff stats for Reminders
+                curr = self._load_index(self.paths["reminders_index"])
+                prev_rem = self._load_index(self.paths["reminders_index"])
+                self.last_diff["rem"] = self._diff_index(prev_rem, curr, system="rem")
+                count = self._count_tasks(self.paths["reminders_index"])
+                self.log_line(f"Reminders tasks: {count}")
+
+                # Advance to next step
+                self.advance_operation_step("Building links")
+                script_bl = os.path.join(os.path.dirname(__file__), "..", "obs_tools", "commands", "build_sync_links.py")
+                args_bl = [
+                    self.get_managed_python(),
+                    script_bl,
+                    "--obs", self.paths["obsidian_index"],
+                    "--rem", self.paths["reminders_index"],
+                    "--output", self.paths["links"],
+                    "--min-score", str(self.prefs.min_score),
+                    "--days-tol", str(self.prefs.days_tolerance),
+                ]
+                if self.prefs.include_done:
+                    args_bl.append("--include-done")
+
+                def after_links():
+                    # Update link stats
+                    curr = self._load_index(self.paths["links"])
+                    self.last_diff["links"] = self._diff_index({}, curr, system="links")
+                    count = len(curr.get("sync_links", [])) if curr else 0
+                    self.log_line(f"Sync links: {count}")
+
+                    # Advance to next step
+                    self.advance_operation_step("Planning creates")
+
+                    # Plan creation
+                    ts = time.strftime("%Y%m%d_%H%M%S")
+                    base = os.path.expanduser("~/.config/obs-tools/backups")
+                    os.makedirs(base, exist_ok=True)
+                    plan_path = os.path.join(base, f"quick_sync_plan_{ts}.json")
+                    anchors_changes = os.path.join(base, f"quick_sync_anchors_{ts}.json")
+                    args_plan = [
+                        self.get_managed_python(), "-u", script, "sync", "create",
+                        "--obs", self.paths["obsidian_index"],
+                        "--rem", self.paths["reminders_index"],
+                        "--links", self.paths["links"],
+                        "--plan-out", plan_path,
+                    ]
+                    # Respect prefs; create_missing loads app.json by default, so no overrides needed
+                    def after_plan():
+                        # Advance to next step
+                        self.advance_operation_step("Ensuring anchors")
+                        script_ensure = os.path.join(os.path.dirname(__file__), "..", "obs_tools", "commands", "ensure_anchors_for_plan.py")
+                        args_ensure = [
+                            self.get_managed_python(),
+                            script_ensure,
+                            "--plan", plan_path,
+                            "--apply",
+                            "--changes-out", anchors_changes,
+                        ]
+
+                        def after_anchors():
+                            # Advance to next step
+                            self.advance_operation_step("Refreshing Obsidian")
+                            args_obs2 = [
+                                self.get_managed_python(),
+                                script_collect_obs,
+                                "--use-config",
+                                "--output", self.paths["obsidian_index"],
+                            ]
+                            if self.prefs.ignore_common:
+                                args_obs2.append("--ignore-common")
+
+                            def after_collect_obs2():
+                                # Advance to next step
+                                self.advance_operation_step("Re-planning creates")
+
+                                # Re-plan so obsidian:// URLs include block IDs
+                                plan2_path = os.path.join(base, f"quick_sync_plan2_{ts}.json")
+                                args_plan2 = [
+                                    self.get_managed_python(), "-u", script, "sync", "create",
+                                    "--obs", self.paths["obsidian_index"],
+                                    "--rem", self.paths["reminders_index"],
+                                    "--links", self.paths["links"],
+                                    "--plan-out", plan2_path,
+                                ]
+
+                                def after_plan2():
+                                    # Advance to next step
+                                    self.advance_operation_step("Creating counterparts")
+                                    args_create = [
+                                        self.get_managed_python(), "-u", script, "sync", "create",
+                                        "--obs", self.paths["obsidian_index"],
+                                        "--rem", self.paths["reminders_index"],
+                                        "--links", self.paths["links"],
+                                        "--apply",
+                                    ]
+
+                                    def after_create():
+                                        # Advance to final step
+                                        self.advance_operation_step("Applying sync")
+                                        args_apply = [
+                                            self.get_managed_python(), "-u", script, "sync", "apply",
+                                            "--obs", self.paths["obsidian_index"],
+                                            "--rem", self.paths["reminders_index"],
+                                            "--links", self.paths["links"],
+                                            "--apply",
+                                        ]
+
+                                        def done():
+                                            # Show structured summary instead of raw logs
+                                            summary_msg = self.format_completion_summary("sync_links_apply", "Sync apply")
+                                            if summary_msg:
+                                                self.log_line(summary_msg)
+                                            else:
+                                                self.log_line("Quick Sync complete")
+
+                                            # Show backup artifact path
+                                            summary_path = self.find_latest_run_summary("sync_links_apply")
+                                            if summary_path:
+                                                self.log_line(f"Details: {os.path.basename(summary_path)}")
+
+                                            # Complete the multi-step operation
+                                            created = output_counts.get('created', 0) if 'output_counts' in locals() else 0
+                                            updated = output_counts.get('updated', 0) if 'output_counts' in locals() else 0
+                                            summary = f"+{created}/{updated} created/updated" if created + updated > 0 else "No changes"
+                                            self.complete_multi_step_operation(summary)
+
+                                            self.status = "Quick Sync complete"
+                                            self.is_busy = False
+
+                                        self.service_manager.run_command(args_apply, self.log_line, done)
+
+                                    self.service_manager.run_command(args_create, self.log_line, after_create)
+
+                                self.service_manager.run_command(args_plan2, self.log_line, after_plan2)
+
+                            self.service_manager.run_command(args_obs2, self.log_line, after_collect_obs2)
+
+                        self.service_manager.run_command(args_ensure, self.log_line, after_anchors)
+
+                    self.service_manager.run_command(args_plan, self.log_line, after_plan)
+
+                self.service_manager.run_command(args_bl, self.log_line, after_links)
+
+            self.service_manager.run_command(args, self.log_line, after_collect_rem)
+
+        self.service_manager.run_command(args_obs, self.log_line, after_collect_obs)
     
     def _do_collect_reminders_for_chain(self):
         """Collect Reminders tasks as part of the update-all-and-apply chain."""
@@ -379,6 +746,8 @@ class TUIController:
             "--config", self.paths["reminders_lists"],
             "--output", self.paths["reminders_index"],
         ]
+        # Use hybrid collector for better performance
+        args.append("--use-hybrid")
         if self.prefs.ignore_common:
             args.append("--ignore-common")
         
@@ -523,23 +892,32 @@ class TUIController:
                 total, missing, deleted = uil.apply_lifecycle(self.paths["obsidian_index"], self.prefs.prune_days)
                 if total:
                     self.log_line(f"Obsidian lifecycle: missing+{missing}, deleted+{deleted}")
-            
+
             # Calculate and log diff
             curr = self._load_index(self.paths["obsidian_index"])
             self.last_diff["obs"] = self._diff_index(prev, curr, system="obs")
             count = self._count_tasks(self.paths["obsidian_index"])
-            self.log_line(f"Obsidian tasks: {count}")
-            
-            # Tail recent component logs
-            self.tail_component_logs("collect_obsidian", "Obsidian collection")
-            
-            # Find and display run summary path
-            summary_path = self.find_latest_run_summary("collect_obsidian")
-            if summary_path:
-                self.status = f"Ready - Summary: {os.path.basename(summary_path)}"
+
+            # Show structured summary instead of raw logs
+            summary_msg = self.format_completion_summary("collect_obsidian", "Obsidian collection")
+            if summary_msg:
+                self.log_line(summary_msg)
             else:
-                self.status = "Ready"
-                
+                self.log_line(f"Obsidian tasks: {count}")
+
+            # Show changes if any
+            if self.last_diff["obs"]:
+                added = len(self.last_diff["obs"].get("added", []))
+                modified = len(self.last_diff["obs"].get("modified", []))
+                removed = len(self.last_diff["obs"].get("removed", []))
+                if added or modified or removed:
+                    self.log_line(f"Changes: +{added} new, ~{modified} modified, -{removed} removed")
+
+            # Set completion summary
+            if summary_msg:
+                self.set_completion_summary(summary_msg)
+
+            self.status = "Ready"
             self.is_busy = False
         
         self.service_manager.run_command(args, self.log_line, completion_callback)
@@ -566,7 +944,9 @@ class TUIController:
             "--config", self.paths["reminders_lists"],
             "--output", self.paths["reminders_index"],
         ]
-        
+        # Use hybrid collector for better performance
+        args.append("--use-hybrid")
+
         def completion_callback():
             # Apply lifecycle prune/marking if configured
             if self.prefs.prune_days is not None and self.prefs.prune_days >= 0:
@@ -574,23 +954,32 @@ class TUIController:
                 total, missing, deleted = uil.apply_lifecycle(self.paths["reminders_index"], self.prefs.prune_days)
                 if total:
                     self.log_line(f"Reminders lifecycle: missing+{missing}, deleted+{deleted}")
-            
+
             # Calculate and log diff
             curr = self._load_index(self.paths["reminders_index"])
             self.last_diff["rem"] = self._diff_index(prev, curr, system="rem")
             count = self._count_tasks(self.paths["reminders_index"])
-            self.log_line(f"Reminders tasks: {count}")
-            
-            # Tail recent component logs
-            self.tail_component_logs("collect_reminders", "Reminders collection")
-            
-            # Find and display run summary path
-            summary_path = self.find_latest_run_summary("collect_reminders")
-            if summary_path:
-                self.status = f"Ready - Summary: {os.path.basename(summary_path)}"
+
+            # Show structured summary instead of raw logs
+            summary_msg = self.format_completion_summary("collect_reminders", "Reminders collection")
+            if summary_msg:
+                self.log_line(summary_msg)
             else:
-                self.status = "Ready"
-                
+                self.log_line(f"Reminders tasks: {count}")
+
+            # Show changes if any
+            if self.last_diff["rem"]:
+                added = len(self.last_diff["rem"].get("added", []))
+                modified = len(self.last_diff["rem"].get("modified", []))
+                removed = len(self.last_diff["rem"].get("removed", []))
+                if added or modified or removed:
+                    self.log_line(f"Changes: +{added} new, ~{modified} modified, -{removed} removed")
+
+            # Set completion summary
+            if summary_msg:
+                self.set_completion_summary(summary_msg)
+
+            self.status = "Ready"
             self.is_busy = False
         
         self.service_manager.run_command(args, self.log_line, completion_callback)

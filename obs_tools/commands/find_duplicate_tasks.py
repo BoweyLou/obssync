@@ -18,9 +18,13 @@ import argparse
 import json
 import os
 import re
+import sys
 from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Dict, List, Set, Tuple, Optional
+
+# Add the project root to the path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 def load_json_file(path: str) -> Dict:
@@ -53,6 +57,72 @@ def calculate_similarity(desc1: str, desc2: str) -> float:
         return 0.0
     
     return SequenceMatcher(None, norm1, norm2).ratio()
+
+
+def get_content_signature(task: Dict) -> str:
+    """
+    Generate content signature for semantic comparison of tasks.
+    Used for identifying duplicates among tasks with empty or minimal descriptions.
+    """
+    desc = (task.get('description', '') or '').strip()
+    priority = task.get('priority', '') or 'none'
+    tags = '|'.join(sorted(task.get('tags', []) or []))
+    status = task.get('status', 'todo')
+    vault_name = (task.get('vault', {}) or {}).get('name', '')
+    
+    # Create a signature that captures semantic meaning
+    signature = f"{desc}|{priority}|{tags}|{status}|{vault_name}".lower()
+    return signature
+
+
+def find_content_based_duplicates(tasks: Dict[str, Dict]) -> List[List[str]]:
+    """
+    Find duplicates among tasks with empty or minimal descriptions based on content signature.
+    This catches cases like empty reminders with identical priority/tags but different block IDs.
+    """
+    # Focus on tasks with empty or very short descriptions (likely metadata-driven tasks)
+    empty_or_minimal_tasks = []
+    for uuid, task in tasks.items():
+        if task.get('deleted', False):
+            continue
+        
+        desc = (task.get('description', '') or '').strip()
+        # Include tasks with empty descriptions or very short ones (likely just metadata)
+        if len(desc) <= 10:  # Empty or very minimal content
+            empty_or_minimal_tasks.append((uuid, task))
+    
+    if not empty_or_minimal_tasks:
+        return []
+    
+    print(f"Checking {len(empty_or_minimal_tasks)} tasks with empty/minimal descriptions for content-based duplicates...")
+    
+    # Group by content signature
+    groups = {}
+    for uuid, task in empty_or_minimal_tasks:
+        signature = get_content_signature(task)
+        if signature not in groups:
+            groups[signature] = []
+        groups[signature].append(uuid)
+    
+    # Return groups with 2 or more items (duplicates)
+    duplicate_groups = [group for group in groups.values() if len(group) > 1]
+    
+    if duplicate_groups:
+        total_duplicates = sum(len(group) for group in duplicate_groups)
+        print(f"Found {len(duplicate_groups)} content-based duplicate groups with {total_duplicates} total tasks")
+        
+        # Show examples of what was found
+        for i, group in enumerate(duplicate_groups[:3]):  # Show first 3 groups
+            example_task = tasks[group[0]]
+            desc = example_task.get('description', '').strip() or '[empty]'
+            priority = example_task.get('priority', 'none')
+            tags = ', '.join(example_task.get('tags', []) or [])
+            print(f"  Group {i+1}: {len(group)} tasks - '{desc}' (priority: {priority}, tags: {tags})")
+        
+        if len(duplicate_groups) > 3:
+            print(f"  ... and {len(duplicate_groups) - 3} more groups")
+    
+    return duplicate_groups
 
 
 def find_duplicate_groups(tasks: Dict[str, Dict], similarity_threshold: float = 0.85) -> List[List[str]]:
@@ -187,14 +257,30 @@ class DuplicationFinder:
         self.removed_rem = []
         
     def find_duplicates(self, similarity_threshold: float = 0.85) -> Tuple[List[List[str]], List[List[str]]]:
-        """Find duplicate groups in both systems."""
-        obs_groups = find_duplicate_groups(self.obs_tasks, similarity_threshold)
-        rem_groups = find_duplicate_groups(self.rem_tasks, similarity_threshold)
+        """Find duplicate groups in both systems using both description-based and content-based detection."""
+        print("\n=== Description-based Duplicate Detection ===")
+        obs_desc_groups = find_duplicate_groups(self.obs_tasks, similarity_threshold)
+        rem_desc_groups = find_duplicate_groups(self.rem_tasks, similarity_threshold)
         
-        print(f"\nFound {len(obs_groups)} Obsidian duplicate groups")
-        print(f"Found {len(rem_groups)} Reminders duplicate groups")
+        print(f"\nFound {len(obs_desc_groups)} Obsidian description-based duplicate groups")
+        print(f"Found {len(rem_desc_groups)} Reminders description-based duplicate groups")
         
-        return obs_groups, rem_groups
+        print("\n=== Content-based Duplicate Detection (for empty/minimal tasks) ===")
+        obs_content_groups = find_content_based_duplicates(self.obs_tasks)
+        rem_content_groups = find_content_based_duplicates(self.rem_tasks)
+        
+        print(f"\nFound {len(obs_content_groups)} Obsidian content-based duplicate groups")
+        print(f"Found {len(rem_content_groups)} Reminders content-based duplicate groups")
+        
+        # Combine both types of duplicates
+        all_obs_groups = obs_desc_groups + obs_content_groups
+        all_rem_groups = rem_desc_groups + rem_content_groups
+        
+        print(f"\n=== Total Results ===")
+        print(f"Total Obsidian duplicate groups: {len(all_obs_groups)}")
+        print(f"Total Reminders duplicate groups: {len(all_rem_groups)}")
+        
+        return all_obs_groups, all_rem_groups
     
     def resolve_duplicates_interactive(self, obs_groups: List[List[str]], 
                                      rem_groups: List[List[str]], 

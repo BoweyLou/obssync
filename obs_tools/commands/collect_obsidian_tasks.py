@@ -36,6 +36,9 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 from uuid import uuid4
 import time
 
+# Add the project root to the path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+
 # Import safe I/O utilities
 from lib.safe_io import (
     safe_write_json_with_lock, 
@@ -74,7 +77,7 @@ class IncrementalCache:
     file_cache: Dict[str, FileCache]  # absolute_path -> FileCache
 
 
-TASK_RE = re.compile(r"^(?P<indent>\s*)[-*]\s+\[(?P<status>[ xX])\]\s+(?P<rest>.*)$")
+TASK_RE = re.compile(r"^(?P<indent>\s*)[-*]\s\[(?P<status>[ xX])\]\s*(?P<rest>.*)$")
 HEADING_RE = re.compile(r"^(?P<hashes>#{1,6})\s+(?P<title>.+?)\s*$")
 BLOCK_ID_RE = re.compile(r"\^(?P<bid>[A-Za-z0-9\-]+)\s*$")
 
@@ -84,7 +87,7 @@ DUE_RE = re.compile(r"(?:📅\s*|\(\s*due\s*:\s*)(?P<due>" + DATE_PAT + r")(?:\)
 SCHED_RE = re.compile(r"(?:⏳\s*|\(\s*scheduled\s*:\s*)(?P<scheduled>" + DATE_PAT + r")(?:\)|\b)")
 START_RE = re.compile(r"(?:🛫\s*|\(\s*start\s*:\s*)(?P<start>" + DATE_PAT + r")(?:\)|\b)")
 DONE_RE = re.compile(r"(?:✅\s*|\(\s*done\s*:\s*)(?P<done>" + DATE_PAT + r")(?:\)|\b)")
-RECUR_RE = re.compile(r"(?:🔁\s*)(?P<recurrence>[^#^✅📅⏳🛫]+?)\s*(?=$|[#^✅📅⏳🛫])")
+RECUR_RE = re.compile(r"(?:🔁\s*)(?P<recurrence>[^#^✅📅⏳🛫⏫🔼🔽🔺]+?)\s*(?=$|[#^✅📅⏳🛫⏫🔼🔽🔺])")
 PRIORITY_RE = re.compile(r"(?P<prio>[⏫🔼🔽🔺])")
 TAG_RE = re.compile(r"(?P<tag>#[A-Za-z0-9/_\-]+)")
 
@@ -183,7 +186,7 @@ def extract_tokens(text: str) -> Tuple[dict, str]:
     m = PRIORITY_RE.search(text)
     if m:
         sym = m.group("prio")
-        pr = {"⏫": "high", "🔼": "medium", "🔽": "low"}.get(sym, sym)
+        pr = {"⏫": "high", "🔼": "medium", "🔽": "low", "🔺": "low"}.get(sym, sym)
         meta["priority"] = pr
         text = PRIORITY_RE.sub("", text)
 
@@ -212,14 +215,70 @@ def heading_tracker(lines: List[str]) -> List[Tuple[int, List[str]]]:
     return mapping
 
 
+def code_block_tracker(lines: List[str]) -> Set[int]:
+    """Track which lines are inside code blocks and should be ignored for task parsing."""
+    in_fenced_block = False
+    in_indented_block = False
+    code_lines = set()
+    fence_pattern = re.compile(r"^\s*```")
+    
+    for idx, line in enumerate(lines, start=1):
+        # Check for fenced code blocks
+        if fence_pattern.match(line):
+            if in_fenced_block:
+                # End of fenced block
+                in_fenced_block = False
+            else:
+                # Start of fenced block
+                in_fenced_block = True
+            code_lines.add(idx)
+            continue
+            
+        # If in fenced block, mark line as code
+        if in_fenced_block:
+            code_lines.add(idx)
+            continue
+            
+        # Check for indented code blocks (4+ spaces or 1+ tabs at start)
+        # But exclude lines that look like list items (start with - or * or numbers)
+        stripped = line.lstrip()
+        if line and not stripped:
+            # Empty line - doesn't affect indented code block status
+            if in_indented_block:
+                code_lines.add(idx)
+            continue
+            
+        indent = len(line) - len(stripped)
+        has_tab_indent = line.startswith('\t')
+        
+        # Check if this looks like a list item (could be nested)
+        is_list_item = re.match(r'^\s*[-*+]\s', line) or re.match(r'^\s*\d+\.\s', line)
+        
+        is_indented_code = (indent >= 4 or has_tab_indent) and not is_list_item
+        
+        if is_indented_code:
+            in_indented_block = True
+            code_lines.add(idx)
+        else:
+            # Non-indented content or list items break indented code blocks
+            in_indented_block = False
+    
+    return code_lines
+
+
 def parse_tasks_from_file(path: str) -> List[dict]:
     with open(path, "r", encoding="utf-8") as f:
         lines = f.read().splitlines()
 
     headings = heading_tracker(lines)
+    code_lines = code_block_tracker(lines)
     tasks: List[dict] = []
 
     for idx, raw in enumerate(lines, start=1):
+        # Skip lines that are inside code blocks
+        if idx in code_lines:
+            continue
+            
         m = TASK_RE.match(raw)
         if not m:
             continue
@@ -261,12 +320,27 @@ def make_source_key(vault_name: str, rel_path: str, task: dict) -> str:
 
 def normalize_content_key(vault_name: str, rel_path: str, raw_line: str) -> str:
     line = raw_line.rstrip()
-    # Strip trailing caret block-id if present
-    m = re.search(r"\s+\^[A-Za-z0-9\-]+\s*$", line)
+    # Extract block-id if present before normalizing
+    block_id = ""
+    m = re.search(r"\s+\^([A-Za-z0-9\-]+)\s*$", line)
     if m:
+        block_id = m.group(1)
         line = line[: m.start()]
+    
     # Normalize whitespace and case
     line = re.sub(r"\s+", " ", line).strip().lower()
+    
+    # Check if line has meaningful content beyond task markers and common symbols
+    content_part = line.replace("- [ ]", "").replace("- [x]", "").strip()
+    # Remove common task markers and symbols
+    content_part = re.sub(r'[⏫🔼🔽🔺⏳📅🛫✅🔁]', '', content_part).strip()
+    content_part = re.sub(r'#\w+', '', content_part).strip()  # Remove hashtags
+    
+    # If the actual content is very minimal, include block_id to avoid collisions
+    if len(content_part) < 3 or not content_part:
+        if block_id:
+            return f"{vault_name}:{rel_path}:{line}:^{block_id}"
+    
     return f"{vault_name}:{rel_path}:{line}"
 
 
@@ -684,112 +758,125 @@ def main(argv: List[str]) -> int:
             f_created, f_modified = None, None
             
         for t in tasks:
-                source_key = make_source_key(vault_name, rel, t)
-                # Resolve UUID via source key or aliases
-                if source_key in source_to_uuid:
-                    uid = source_to_uuid[source_key]
+            source_key = make_source_key(vault_name, rel, t)
+            # Resolve UUID via source key or aliases
+            if source_key in source_to_uuid:
+                uid = source_to_uuid[source_key]
+                prev = existing_tasks.get(uid, {})
+                created_at = prev.get("created_at", now)
+                prev_aliases = set(prev.get("aliases", []) or [])
+            else:
+                # Try reconciliation by content (handles migration hash->block)
+                ckey = normalize_content_key(vault_name, rel, t.get("raw", ""))
+                uids_for_key = content_to_uids.get(ckey) or set()
+                # Filter out UIDs that have already been processed in this run
+                available_uids = uids_for_key - skip_uids - set(out_tasks.keys())
+                
+                if available_uids:
+                    # Prefer the earliest created_at if available (stable)
+                    chosen_uid = None
+                    chosen_created = None
+                    for cand in available_uids:
+                        cr = existing_tasks.get(cand, {})
+                        ca = cr.get("created_at")
+                        if chosen_uid is None:
+                            chosen_uid = cand
+                            chosen_created = ca
+                        else:
+                            # Keep the earliest created_at if comparable
+                            if ca and chosen_created and ca < chosen_created:
+                                chosen_uid = cand
+                                chosen_created = ca
+                    uid = chosen_uid or next(iter(available_uids))
                     prev = existing_tasks.get(uid, {})
                     created_at = prev.get("created_at", now)
                     prev_aliases = set(prev.get("aliases", []) or [])
+                    # Mark other prior UIDs for same content to be skipped from carry-forward
+                    for other in uids_for_key:
+                        if other != uid:
+                            skip_uids.add(other)
                 else:
-                    # Try reconciliation by content (handles migration hash->block)
-                    ckey = normalize_content_key(vault_name, rel, t.get("raw", ""))
-                    uids_for_key = content_to_uids.get(ckey) or set()
-                    if uids_for_key:
-                        # Prefer the earliest created_at if available (stable)
-                        chosen_uid = None
-                        chosen_created = None
-                        for cand in uids_for_key:
-                            cr = existing_tasks.get(cand, {})
-                            ca = cr.get("created_at")
-                            if chosen_uid is None:
-                                chosen_uid = cand
-                                chosen_created = ca
-                            else:
-                                # Keep the earliest created_at if comparable
-                                if ca and chosen_created and ca < chosen_created:
-                                    chosen_uid = cand
-                                    chosen_created = ca
-                        uid = chosen_uid or next(iter(uids_for_key))
-                        prev = existing_tasks.get(uid, {})
-                        created_at = prev.get("created_at", now)
-                        prev_aliases = set(prev.get("aliases", []) or [])
-                        # Mark other prior UIDs for same content to be skipped from carry-forward
-                        for other in uids_for_key:
-                            if other != uid:
-                                skip_uids.add(other)
-                    else:
-                        uid = str(uuid4())
-                        created_at = now
-                        prev_aliases = set()
+                    uid = str(uuid4())
+                    created_at = now
+                    prev_aliases = set()
 
-                # Build aliases set (include prior source_key if differed)
-                aliases = set(prev_aliases)
-                # Include previous recorded source_key to preserve history
-                prev_source = existing_tasks.get(uid, {}).get("source_key") if uid in existing_tasks else None
-                if prev_source:
-                    aliases.add(prev_source)
-                aliases.add(source_key)
+            # Build aliases set (include prior source_key if differed)
+            aliases = set(prev_aliases)
+            # Include previous recorded source_key to preserve history
+            prev_source = existing_tasks.get(uid, {}).get("source_key") if uid in existing_tasks else None
+            if prev_source:
+                aliases.add(prev_source)
+            aliases.add(source_key)
 
-                # Fingerprint for reconciliation/reporting (normalized desc + heading + file + raw hash)
-                desc_norm = t.get("description", "").strip().lower()
-                heading = (t.get("heading") or "").strip().lower()
-                base = os.path.basename(rel).lower()
-                raw_hash = hashlib.sha1((t.get("raw", "")).encode("utf-8")).hexdigest()[:16]
-                fingerprint = hashlib.sha1(f"{desc_norm}|{heading}|{base}|{raw_hash}".encode("utf-8")).hexdigest()
+            # Fingerprint for reconciliation/reporting (normalized desc + heading + file + raw hash)
+            desc_norm = t.get("description", "").strip().lower()
+            heading = (t.get("heading") or "").strip().lower()
+            base = os.path.basename(rel).lower()
+            raw_hash = hashlib.sha1((t.get("raw", "")).encode("utf-8")).hexdigest()[:16]
+            fingerprint = hashlib.sha1(f"{desc_norm}|{heading}|{base}|{raw_hash}".encode("utf-8")).hexdigest()
 
-                # Cache tokenized title for performance optimization
-                title_tokens = normalize_text_for_similarity(t["description"])
-                title_tokens_hash = hashlib.sha1("|".join(title_tokens).encode("utf-8")).hexdigest()[:8] if title_tokens else ""
-                
-                rec = {
-                    "uuid": uid,
-                    "source_key": source_key,
-                    "aliases": sorted(aliases),
-                    "vault": {"name": vault_name, "path": vault_path},
-                    "file": {
-                        "relative_path": rel,
-                        "absolute_path": path,
-                        "line": t["line_number"],
-                        "heading": t.get("heading"),
-                        "created_at": f_created,
-                        "modified_at": f_modified,
-                    },
-                    "status": t["status"],
-                    "description": t["description"],
-                    "raw": t["raw"],
-                    "tags": t.get("tags", []),
-                    "due": t.get("due"),
-                    "scheduled": t.get("scheduled"),
-                    "start": t.get("start"),
-                    "done": t.get("done"),
-                    "recurrence": t.get("recurrence"),
-                    "priority": t.get("priority"),
-                    "block_id": t.get("block_id"),
-                    "external_ids": {"block_id": t.get("block_id")},
-                    "fingerprint": fingerprint,
-                    "created_at": created_at,
-                    "updated_at": now,
-                    "last_seen": now,
-                    # Performance optimization fields
-                    "cached_tokens": title_tokens,
-                    "title_hash": title_tokens_hash,
-                }
-                out_tasks[uid] = rec
+            # Cache tokenized title for performance optimization
+            title_tokens = normalize_text_for_similarity(t["description"])
+            title_tokens_hash = hashlib.sha1("|".join(title_tokens).encode("utf-8")).hexdigest()[:8] if title_tokens else ""
+            
+            rec = {
+                "uuid": uid,
+                "source_key": source_key,
+                "aliases": sorted(aliases),
+                "vault": {"name": vault_name, "path": vault_path},
+                "file": {
+                    "relative_path": rel,
+                    "absolute_path": path,
+                    "line": t["line_number"],
+                    "heading": t.get("heading"),
+                    "created_at": f_created,
+                    "modified_at": f_modified,
+                },
+                "status": t["status"],
+                "description": t["description"],
+                "raw": t["raw"],
+                "tags": t.get("tags", []),
+                "due": t.get("due"),
+                "scheduled": t.get("scheduled"),
+                "start": t.get("start"),
+                "done": t.get("done"),
+                "recurrence": t.get("recurrence"),
+                "priority": t.get("priority"),
+                "block_id": t.get("block_id"),
+                "external_ids": {"block_id": t.get("block_id")},
+                "fingerprint": fingerprint,
+                "created_at": created_at,
+                "updated_at": now,
+                "last_seen": now,
+                # Performance optimization fields
+                "cached_tokens": title_tokens,
+                "title_hash": title_tokens_hash,
+            }
+            out_tasks[uid] = rec
 
-    # Carry forward tasks not seen this run
-    for uid, prev in existing_tasks.items():
-        if uid in out_tasks:
-            continue
-        if uid in skip_uids:
-            # Drop prior duplicates for reconciled content
-            continue
-        out_tasks[uid] = prev
+    # Note: Instead of carrying forward all missing tasks (which preserves deleted tasks),
+    # we now treat tasks not found in the current scan as permanently deleted.
+    # This fixes the issue where deleted tasks were being preserved indefinitely
+    # in the index because the carry-forward logic assumed missing = temporarily unavailable.
+    # 
+    # The previous logic was:
+    # - Carry forward tasks not seen this run
+    # - for uid, prev in existing_tasks.items():
+    #     if uid in out_tasks:
+    #         continue
+    #     if uid in skip_uids:
+    #         # Drop prior duplicates for reconciled content
+    #         continue
+    #     out_tasks[uid] = prev
+    #
+    # Now we only include tasks actually found in the current scan, treating missing ones as deleted.
+    # Tasks from deleted files or removed from existing files are properly excluded.
 
     # Sort tasks by UUID for deterministic output
     tasks_sorted = {uid: out_tasks[uid] for uid in sorted(out_tasks)}
     new_tasks = len([t for t in tasks_sorted.values() if t.get("created_at") == now])
-    carried_forward = len(tasks_sorted) - total_raw_tasks
+    carried_forward = 0  # No longer carrying forward, so this is always 0
+    deleted_tasks = len(existing_tasks) - len(tasks_sorted) + new_tasks
     
     logger.update_counts(
         input_counts={
@@ -800,7 +887,8 @@ def main(argv: List[str]) -> int:
         output_counts={
             "tasks_indexed": len(tasks_sorted),
             "new_tasks": new_tasks,
-            "carried_forward": max(0, carried_forward)
+            "carried_forward": max(0, carried_forward),
+            "deleted_tasks": max(0, deleted_tasks)
         }
     )
 
@@ -871,7 +959,10 @@ def main(argv: List[str]) -> int:
                    output_path=args.output, 
                    task_count=len(tasks_sorted))
         summary_path = logger.end_run(True)
-        print(f"Wrote {len(tasks_sorted)} task(s) to {args.output}")
+        if deleted_tasks > 0:
+            print(f"Wrote {len(tasks_sorted)} task(s) to {args.output} (deleted {deleted_tasks} from index)")
+        else:
+            print(f"Wrote {len(tasks_sorted)} task(s) to {args.output}")
         return 0
         
     except Exception as e:

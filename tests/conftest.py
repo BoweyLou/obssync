@@ -54,6 +54,8 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "requires_scipy: test requires scipy library")
     config.addinivalue_line("markers", "requires_munkres: test requires munkres library")
     config.addinivalue_line("markers", "requires_eventkit: test requires EventKit framework")
+    config.addinivalue_line("markers", "e2e: end-to-end integration tests")
+    config.addinivalue_line("markers", "e2e_live: live end-to-end tests against real Reminders (destructive)")
 
 
 def pytest_collection_modifyitems(config, items):

@@ -116,7 +116,7 @@ class ServiceManager:
         except KeyboardInterrupt:
             log_callback("Interactive command interrupted by user")
         except Exception as e:
-            log_callback(f"Interactive command failed: {e}")
+            log_callback(f"Interactive command failed: {str(e)}")
         finally:
             # Restore curses UI
             view.restore_curses_after_subprocess()
@@ -146,6 +146,7 @@ class ServiceManager:
             
             # Wait for completion
             return_code = proc.wait()
+            log_callback(f"Process finished with exit code: {return_code}")
             
             # Log completion
             if self._cancel_requested:
@@ -158,20 +159,28 @@ class ServiceManager:
                     pass
             else:
                 log_callback(f"Completed (exit {return_code})")
-                
-                # Call completion callback on success
-                if return_code == 0 and completion_callback:
-                    completion_callback()
-        
+
         except Exception as e:
-            log_callback(f"Exception: {e}")
-        
+            log_callback(f"Exception: {str(e)}")
+            return_code = -1  # Indicate failure
+
         finally:
             # Clean up
+            log_callback(f"Cleaning up operation: {operation_name}")
             with self._operation_lock:
                 self._running_processes.pop(operation_name, None)
                 self._current_operation = None
                 self._cancel_requested = False
+            log_callback("Service manager ready for next operation")
+
+        # Call completion callback on success, outside of the lock
+        if return_code == 0 and completion_callback and not self._cancel_requested:
+            log_callback("Executing completion callback...")
+            try:
+                completion_callback()
+                log_callback("Completion callback finished")
+            except Exception as e:
+                log_callback(f"Completion callback failed: {str(e)}")
     
     def _stream_output(self, proc: subprocess.Popen, log_callback: Callable[[str], None]):
         """Stream subprocess output to log in real-time."""
@@ -213,8 +222,35 @@ class ServiceManager:
         stderr_thread.start()
         
         # Wait for both to complete or process to finish
+        poll_count = 0
+        last_heartbeat_time = time.time()
+        heartbeat_interval = 5.0  # Send heartbeat every 5 seconds during long operations
+
         while proc.poll() is None:
             time.sleep(0.1)
+            poll_count += 1
+
+            # Send periodic heartbeat for long-running operations
+            current_time = time.time()
+            if current_time - last_heartbeat_time >= heartbeat_interval:
+                elapsed = poll_count * 0.1
+                if elapsed > 10:  # Only show heartbeat after 10 seconds
+                    log_callback(f"⏳ Still running... ({elapsed:.0f}s elapsed)")
+                last_heartbeat_time = current_time
+
+            # Safeguard: if we've been polling for too long, something's wrong
+            # Extended timeout for EventKit operations which can take 20+ minutes with thousands of tasks
+            if poll_count > 18000:  # 1800 seconds (30 minutes) max
+                log_callback("Process appears hung - forcing termination")
+                try:
+                    proc.terminate()
+                    time.sleep(1.0)
+                    if proc.poll() is None:
+                        proc.kill()
+                except Exception:
+                    pass
+                break
+            
             if self._cancel_requested:
                 try:
                     proc.terminate()
@@ -226,8 +262,17 @@ class ServiceManager:
                 break
         
         # Wait for reader threads to finish (with timeout)
-        stdout_done.wait(timeout=1.0)
-        stderr_done.wait(timeout=1.0)
+        # If threads don't finish, that's okay - the process has already terminated
+        stdout_done.wait(timeout=2.0)
+        stderr_done.wait(timeout=2.0)
+        
+        # Force close streams if threads are still hanging
+        if not stdout_done.is_set() or not stderr_done.is_set():
+            try:
+                proc.stdout.close()
+                proc.stderr.close()
+            except Exception:
+                pass
     
     def _extract_operation_name(self, args: List[str]) -> str:
         """Extract a human-readable operation name from command arguments."""

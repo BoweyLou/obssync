@@ -5,7 +5,7 @@ Debug version of sync_links_apply.py to identify EventKit issues.
 
 import json
 import os
-from sync_links_apply import load_json, DEFAULT_OBS, DEFAULT_REM, DEFAULT_LINKS
+from obs_tools.commands.sync_links_apply import load_json, DEFAULT_OBS, DEFAULT_REM, DEFAULT_LINKS
 
 def debug_update_reminder(rem_task: dict) -> dict:
     """Debug version that reports exactly what fails."""

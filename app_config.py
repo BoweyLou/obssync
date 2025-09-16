@@ -4,8 +4,9 @@ from __future__ import annotations
 import json
 import os
 import sys
+import glob
 from dataclasses import dataclass, asdict
-from typing import Optional
+from typing import Optional, List, Tuple
 
 # Import safe I/O utilities
 from lib.safe_io import safe_write_json_with_lock
@@ -17,7 +18,7 @@ def _expand(p: str) -> str:
 
 def default_paths() -> dict:
     """Centralized path configuration for all obs-tools scripts.
-    
+
     This is the single source of truth for file locations.
     All other scripts should import and use these paths.
     """
@@ -25,25 +26,25 @@ def default_paths() -> dict:
         # Configuration files
         "obsidian_vaults": _expand("~/.config/obsidian_vaults.json"),
         "reminders_lists": _expand("~/.config/reminders_lists.json"),
-        
+
         # Index files (data)
         "obsidian_index": _expand("~/.config/obsidian_tasks_index.json"),
         "reminders_index": _expand("~/.config/reminders_tasks_index.json"),
-        
+
         # Cache files (for performance)
         "obsidian_cache": _expand("~/.config/obsidian_tasks_cache.json"),
         "reminders_snapshot_cache": _expand("~/.config/reminders_snapshot_cache.json"),
-        
+
         # Sync files
         "links": _expand("~/.config/sync_links.json"),
-        
+
         # Application configuration
         "app_config": _expand("~/.config/obs-tools/app.json"),
-        
+
         # Directories
         "logs_dir": _expand("~/.config/obs-tools/logs"),
         "backups_dir": _expand("~/.config/obs-tools/backups"),
-        
+
         # Backup-specific files (commonly used)
         "sync_changeset": _expand("~/.config/obs-tools/backups/sync_changeset.json"),
         "task_operations_backup": _expand("~/.config/obs-tools/backups/task_operations.json"),
@@ -159,6 +160,13 @@ class AppPreferences:
     # Calendar settings
     calendar_vault_name: str = ""  # Selected vault for calendar sync (empty = auto-detect)
 
+    # SQLite DB Reader settings
+    enable_db_reader: bool = False  # Feature flag for DB access
+    db_fallback_enabled: bool = True  # Allow EventKit fallback when DB fails
+    db_read_timeout: float = 10.0  # SQLite connection timeout in seconds
+    schema_validation_level: str = "warning"  # "strict", "warning", or "disabled"
+    db_query_complexity: str = "standard"  # "minimal", "standard", "enhanced", "complete"
+
     # Creation settings
     creation_defaults: CreationDefaults = None
     obs_to_rem_rules: list = None  # List[ObsToRemRule]
@@ -214,6 +222,13 @@ def load_app_config() -> tuple[AppPreferences, dict]:
             prune_days=int(data.get("prune_days", -1)),
             last_summary=str(data.get("last_summary", "")),
             calendar_vault_name=str(data.get("calendar_vault_name", "")),
+            # DB Reader settings
+            enable_db_reader=bool(data.get("enable_db_reader", False)),
+            db_fallback_enabled=bool(data.get("db_fallback_enabled", True)),
+            db_read_timeout=float(data.get("db_read_timeout", 10.0)),
+            schema_validation_level=str(data.get("schema_validation_level", "warning")),
+            db_query_complexity=str(data.get("db_query_complexity", "standard")),
+            # Creation settings
             creation_defaults=creation_defaults,
             obs_to_rem_rules=obs_to_rem_rules,
             rem_to_obs_rules=rem_to_obs_rules,
@@ -254,6 +269,13 @@ def save_app_config(prefs: AppPreferences) -> None:
         "prune_days": prefs.prune_days,
         "last_summary": prefs.last_summary,
         "calendar_vault_name": prefs.calendar_vault_name,
+        # DB Reader settings
+        "enable_db_reader": prefs.enable_db_reader,
+        "db_fallback_enabled": prefs.db_fallback_enabled,
+        "db_read_timeout": prefs.db_read_timeout,
+        "schema_validation_level": prefs.schema_validation_level,
+        "db_query_complexity": prefs.db_query_complexity,
+        # Creation settings
         "creation_defaults": {
             "obs_inbox_file": prefs.creation_defaults.obs_inbox_file,
             "rem_default_calendar_id": prefs.creation_defaults.rem_default_calendar_id,
@@ -276,3 +298,142 @@ def save_app_config(prefs: AppPreferences) -> None:
         # Fall back to direct write if safe write fails
         with open(cfg_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def discover_reminders_sqlite_stores() -> List[Tuple[str, str]]:
+    """
+    Discover Apple Reminders SQLite database stores on macOS.
+
+    Returns:
+        List of (store_path, description) tuples for discovered stores
+    """
+    stores = []
+
+    # Reminders CoreData stores (introduced with tags/groups metadata)
+    reminders_base = _expand("~/Library/Reminders")
+    if os.path.isdir(reminders_base):
+        # CoreData container hierarchy looks like Container_v*/Stores/Data-<uuid>-<random>.sqlite
+        coredata_patterns = [
+            "Container_v*/Stores/Data-*.sqlite",
+            "Container_v*/Stores/*/Data-*.sqlite",  # nested variant seen on newer macOS
+        ]
+        for pattern in coredata_patterns:
+            full_pattern = os.path.join(reminders_base, pattern)
+            for match in glob.glob(full_pattern):
+                if os.path.isfile(match):
+                    stores.append((match, "Reminders CoreData Store"))
+
+    # Historical Calendar stores kept as a fallback for older releases
+    calendar_dir = _expand("~/Library/Calendars")
+    if os.path.isdir(calendar_dir):
+        calendar_db = os.path.join(calendar_dir, "Calendar.sqlitedb")
+        if os.path.isfile(calendar_db):
+            stores.append((calendar_db, "Legacy Calendar Store"))
+
+    containers_base = _expand("~/Library/Containers")
+    if os.path.isdir(containers_base):
+        calendar_patterns = [
+            "com.apple.CalendarAgent/Data/Library/Calendars/Calendar.sqlitedb",
+            "com.apple.remindd/Data/Library/Calendars/Calendar.sqlitedb",
+            "com.apple.calendar/Data/Library/Calendars/Calendar.sqlitedb",
+        ]
+
+        for pattern in calendar_patterns:
+            full_pattern = os.path.join(containers_base, pattern)
+            for match in glob.glob(full_pattern):
+                if os.path.isfile(match):
+                    container_name = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(match))))
+                    stores.append((match, f"Legacy Container Store ({container_name})"))
+
+    group_containers = _expand("~/Library/Group Containers")
+    if os.path.isdir(group_containers):
+        group_patterns = [
+            "*/Library/Calendars/Calendar.sqlitedb",
+            "*/*.sqlitedb",
+        ]
+
+        for pattern in group_patterns:
+            full_pattern = os.path.join(group_containers, pattern)
+            for match in glob.glob(full_pattern):
+                if os.path.isfile(match) and "Calendar" in os.path.basename(match):
+                    group_name = os.path.basename(os.path.dirname(os.path.dirname(match)))
+                    stores.append((match, f"Legacy Group Container ({group_name})"))
+
+    # Sort by modification time (most recently modified first)
+    stores_with_mtime = []
+    for store_path, description in stores:
+        try:
+            mtime = os.path.getmtime(store_path)
+            stores_with_mtime.append((store_path, description, mtime))
+        except OSError:
+            # Skip stores we can't access
+            continue
+
+    stores_with_mtime.sort(key=lambda x: x[2], reverse=True)
+    return [(path, desc) for path, desc, _ in stores_with_mtime]
+
+
+def get_primary_reminders_store() -> Optional[str]:
+    """
+    Get the path to the primary Apple Reminders SQLite store.
+
+    Returns:
+        Path to the most likely active store, or None if not found
+    """
+    stores = discover_reminders_sqlite_stores()
+    if not stores:
+        return None
+
+    # Return the most recently modified store (likely the active one)
+    return stores[0][0]
+
+
+def validate_reminders_store(store_path: str) -> Tuple[bool, str]:
+    """
+    Validate that a SQLite store looks like a valid Reminders database.
+
+    Args:
+        store_path: Path to SQLite database file
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if not os.path.isfile(store_path):
+        return False, f"Store file does not exist: {store_path}"
+
+    try:
+        import sqlite3
+
+        with sqlite3.connect(f"file:{store_path}?mode=ro", uri=True, timeout=5.0) as conn:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name IN (
+                    'ZREMCDREMINDER',
+                    'ZREMCDLIST',
+                    'ZREMCDACCOUNT'
+                )
+                """
+            )
+            tables = {row[0] for row in cursor.fetchall()}
+
+            if {'ZREMCDREMINDER', 'ZREMCDLIST'}.issubset(tables):
+                return True, "Valid Reminders CoreData store"
+
+            # Fall back to legacy Calendar store detection
+            cursor.execute(
+                """
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name IN ('CalendarItem', 'Calendar', 'Store')
+                """
+            )
+            legacy_tables = {row[0] for row in cursor.fetchall()}
+            if {'CalendarItem', 'Calendar'}.issubset(legacy_tables):
+                return True, "Valid legacy Calendar store"
+
+            return False, "Missing required Reminders tables"
+
+    except Exception as e:
+        return False, f"Error validating store: {e}"

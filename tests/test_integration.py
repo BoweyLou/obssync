@@ -138,8 +138,8 @@ Project documentation here.
                 "task_count": 3
             },
             "tasks": {
-                "rem-uuid-1": {
-                    "uuid": "rem-uuid-1",
+                "12345678-1234-5678-9abc-123456789001": {
+                    "uuid": "12345678-1234-5678-9abc-123456789001",
                     "title": "Buy groceries today",
                     "completed": False,
                     "list_name": "Tasks",
@@ -147,8 +147,8 @@ Project documentation here.
                     "created_at": f"{today}T09:00:00Z",
                     "updated_at": f"{today}T09:00:00Z"
                 },
-                "rem-uuid-2": {
-                    "uuid": "rem-uuid-2", 
+                "12345678-1234-5678-9abc-123456789002": {
+                    "uuid": "12345678-1234-5678-9abc-123456789002", 
                     "title": "Project report deadline",
                     "completed": False,
                     "list_name": "Tasks",
@@ -156,8 +156,8 @@ Project documentation here.
                     "created_at": f"{today}T09:00:00Z",
                     "updated_at": f"{today}T09:00:00Z"
                 },
-                "rem-uuid-3": {
-                    "uuid": "rem-uuid-3",
+                "12345678-1234-5678-9abc-123456789003": {
+                    "uuid": "12345678-1234-5678-9abc-123456789003",
                     "title": "Design phase planning",
                     "completed": False,
                     "list_name": "Tasks", 
@@ -185,8 +185,8 @@ Project documentation here.
                 "task_count": 5
             },
             "tasks": {
-                "obs-uuid-1": {
-                    "uuid": "obs-uuid-1",
+                "87654321-4321-8765-cba9-987654321001": {
+                    "uuid": "87654321-4321-8765-cba9-987654321001",
                     "vault_name": "Test Vault",
                     "vault_path": self.vault_dir,
                     "file_path": "2023-12-15.md",
@@ -198,8 +198,8 @@ Project documentation here.
                     "created_at": f"{today}T09:00:00Z",
                     "updated_at": f"{today}T09:00:00Z"
                 },
-                "obs-uuid-2": {
-                    "uuid": "obs-uuid-2",
+                "87654321-4321-8765-cba9-987654321002": {
+                    "uuid": "87654321-4321-8765-cba9-987654321002",
                     "vault_name": "Test Vault", 
                     "vault_path": self.vault_dir,
                     "file_path": "2023-12-15.md",
@@ -212,8 +212,8 @@ Project documentation here.
                     "created_at": f"{today}T09:00:00Z",
                     "updated_at": f"{today}T09:00:00Z"
                 },
-                "obs-uuid-3": {
-                    "uuid": "obs-uuid-3",
+                "87654321-4321-8765-cba9-987654321003": {
+                    "uuid": "87654321-4321-8765-cba9-987654321003",
                     "vault_name": "Test Vault",
                     "vault_path": self.vault_dir,
                     "file_path": "2023-12-15.md", 
@@ -224,8 +224,8 @@ Project documentation here.
                     "created_at": f"{today}T09:00:00Z",
                     "updated_at": f"{today}T09:00:00Z"
                 },
-                "obs-uuid-4": {
-                    "uuid": "obs-uuid-4",
+                "87654321-4321-8765-cba9-987654321004": {
+                    "uuid": "87654321-4321-8765-cba9-987654321004",
                     "vault_name": "Test Vault",
                     "vault_path": self.vault_dir,
                     "file_path": "Project Alpha.md",
@@ -273,8 +273,8 @@ Project documentation here.
             },
             "links": [
                 {
-                    "obs_uuid": "obs-uuid-1",
-                    "rem_uuid": "rem-uuid-1", 
+                    "obs_uuid": "87654321-4321-8765-cba9-987654321001",
+                    "rem_uuid": "12345678-1234-5678-9abc-123456789001", 
                     "score": 0.95,
                     "title_similarity": 0.90,
                     "date_distance_days": 0,
@@ -290,8 +290,8 @@ Project documentation here.
                     }
                 },
                 {
-                    "obs_uuid": "obs-uuid-2",
-                    "rem_uuid": "rem-uuid-2",
+                    "obs_uuid": "87654321-4321-8765-cba9-987654321002",
+                    "rem_uuid": "12345678-1234-5678-9abc-123456789002",
                     "score": 0.85,
                     "title_similarity": 0.80,
                     "date_distance_days": 0,
@@ -307,8 +307,8 @@ Project documentation here.
                     }
                 },
                 {
-                    "obs_uuid": "obs-uuid-4",
-                    "rem_uuid": "rem-uuid-3",
+                    "obs_uuid": "87654321-4321-8765-cba9-987654321004",
+                    "rem_uuid": "12345678-1234-5678-9abc-123456789003",
                     "score": 0.78,
                     "title_similarity": 0.70,
                     "date_distance_days": 0,
@@ -360,7 +360,7 @@ Project documentation here.
             "planned_changes": {
                 "obsidian_updates": [
                     {
-                        "task_uuid": "obs-uuid-1",
+                        "task_uuid": "87654321-4321-8765-cba9-987654321001",
                         "file_path": os.path.join(self.vault_dir, "2023-12-15.md"),
                         "line_number": 4,
                         "current_line": "- [ ] Buy groceries 📅 2023-12-15 #personal",

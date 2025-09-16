@@ -23,7 +23,7 @@ import sys
 import os
 
 # Add the project root to the path for imports
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from tui.view import TUIView
 from tui.controller import TUIController
@@ -47,12 +47,19 @@ class ModularTUIApp:
         self.progress_tracker = get_progress_tracker()
         self.controller = TUIController(self.view, self.service_manager)
         
+        # Validate sync environment at startup
+        self.controller.validate_sync_environment()
+        
         # Setup signal handling for graceful shutdown
         self._setup_signal_handlers()
         
         # Performance metrics
         self.last_render_time = 0
         self.render_count = 0
+        
+        # Event-driven rendering state
+        self.needs_render = True
+        self.last_data_check = 0
         
     def _setup_signal_handlers(self):
         """Setup signal handlers for graceful shutdown."""
@@ -89,10 +96,23 @@ class ModularTUIApp:
         while self.controller.is_running:
             try:
                 # Update busy state from service manager
+                old_busy = self.controller.is_busy
                 self.controller.is_busy = self.service_manager.is_busy()
                 
-                # Render the current state
-                self._render_with_metrics()
+                # Check if we need to render due to state changes
+                if old_busy != self.controller.is_busy:
+                    self.needs_render = True
+                
+                # Check for data file changes periodically (every 5 seconds)
+                current_time = time.time()
+                if current_time - self.last_data_check > 5.0:
+                    self._check_data_changes()
+                    self.last_data_check = current_time
+                
+                # Only render if something has actually changed
+                if self.needs_render:
+                    self._render_with_metrics()
+                    self.needs_render = False
                 
                 # Handle input with timeout to allow for periodic updates
                 self._handle_input_with_timeout()
@@ -111,9 +131,20 @@ class ModularTUIApp:
                     break
                     
             except Exception as e:
-                # Handle unexpected errors
-                self.controller.log_line(f"Unexpected error: {e}")
-                self.controller.status = f"Error: {e}"
+                # Handle unexpected errors with safe string conversion and detailed debugging
+                try:
+                    error_msg = str(e) if e else "Unknown error"
+                    error_type = type(e).__name__ if e else "Unknown"
+                    
+                    # Log with safe string formatting
+                    safe_msg = f"Unexpected error ({error_type}): {error_msg}"
+                    self.controller.log_line(safe_msg)
+                    self.controller.status = f"Error: {error_msg}"
+                except Exception as inner_e:
+                    # Even safer fallback if string conversion fails
+                    self.controller.log_line("Unexpected error: [Error details unavailable]")
+                    self.controller.status = "Error: [Details unavailable]"
+                
                 time.sleep(0.1)  # Prevent rapid error loops
         
         self._cleanup()
@@ -146,8 +177,8 @@ class ModularTUIApp:
     
     def _handle_input_with_timeout(self):
         """Handle input with timeout to allow for periodic UI updates."""
-        # Set a short timeout so we can update the UI even when no input is received
-        self.view.stdscr.timeout(100)  # 100ms timeout
+        # Set a longer timeout to reduce CPU usage - only update when needed
+        self.view.stdscr.timeout(200)  # 200ms timeout (5 FPS)
         
         try:
             ch = self.view.get_user_input()
@@ -156,6 +187,9 @@ class ModularTUIApp:
             
             # Reset cursor to original position and process input
             self.view.stdscr.timeout(-1)  # Reset to blocking
+            
+            # Any user input should trigger a render
+            self.needs_render = True
             
             # Simulate the input by ungetting it and letting controller handle it
             curses.ungetch(ch)
@@ -169,12 +203,36 @@ class ModularTUIApp:
             # Always reset timeout to blocking for normal operation
             self.view.stdscr.timeout(-1)
     
+    def _check_data_changes(self):
+        """Check if any data files have changed and trigger render if needed."""
+        try:
+            # Use the controller's cached data loading which checks mtime internally
+            # This is efficient because it only loads if files have actually changed
+            old_cache_state = str(self.controller._data_cache)
+            
+            # Trigger cache checks by accessing the file paths
+            paths = self.controller.paths
+            self.controller._count_tasks(paths.get('obsidian_index', ''))
+            self.controller._count_tasks(paths.get('reminders_index', ''))
+            self.controller._count_links(paths.get('links', ''))
+            
+            # If cache state changed, we need to render
+            new_cache_state = str(self.controller._data_cache)
+            if old_cache_state != new_cache_state:
+                self.needs_render = True
+                self.controller.log_line("Data files changed - triggering refresh")
+        
+        except Exception as e:
+            # Don't let data checking break the main loop
+            self.controller.log_line(f"Error checking data changes: {str(e)}")
+
     def _handle_curses_error(self, error):
         """Handle curses-specific errors with recovery attempts."""
         try:
             # Attempt to recover by refreshing terminal dimensions
             self.view.handle_resize()
             self.controller.status = f"Display recovered from error: {error}"
+            self.needs_render = True  # Trigger render after recovery
             
             # Try a minimal render to test recovery
             height, width = self.view.stdscr.getmaxyx()
@@ -185,7 +243,7 @@ class ModularTUIApp:
             
         except curses.error:
             # If recovery fails, log it and continue
-            self.controller.log_line(f"Failed to recover from curses error: {error}")
+            self.controller.log_line(f"Failed to recover from curses error: {str(error)}")
             time.sleep(0.5)  # Give terminal time to recover
     
     def _cleanup(self):

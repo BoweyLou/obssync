@@ -59,6 +59,7 @@ from obs_tools.commands import (
     reset_obs_tools,
     app_tui,
     setup,
+    test_db_reader,
 )
 
 # Import configuration utilities
@@ -237,6 +238,11 @@ def main(argv: List[str]) -> int:
     sp_setup.add_argument("--all", action="store_true", help="Install all applicable dependency groups")
     sp_setup.add_argument("--test", help="Test if a dependency group is installed")
     sp_setup.add_argument("--interactive", action="store_true", help="Run interactive setup (default)")
+
+    # test-db-reader
+    sp_test_db = subparsers.add_parser("test-db-reader", help="Test SQLite database reader functionality")
+    sp_test_db.add_argument("--test", choices=["discovery", "connection", "performance", "hybrid", "config", "all"], default="all", help="Which test to run")
+    sp_test_db.add_argument("--output-json", help="Output results to JSON file")
 
     # sync suggest
     sp_sync = subparsers.add_parser("sync", help="Sync tools")
@@ -493,6 +499,11 @@ def main(argv: List[str]) -> int:
         if args.interactive:
             cmd_args.append("--interactive")
         return run_command_module(setup.main, cmd_args)
+    elif args.tool == "test-db-reader":
+        cmd_args = ["--test", args.test]
+        if args.output_json:
+            cmd_args.extend(["--output-json", args.output_json])
+        return run_command_module(test_db_reader.main, cmd_args)
     else:
         print("Unknown action. See --help.")
         return 2

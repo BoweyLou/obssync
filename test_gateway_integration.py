@@ -100,7 +100,7 @@ def test_sync_apply_integration():
     
     try:
         # Import the updated function
-        from sync_links_apply import update_reminder
+        from obs_tools.commands.sync_links_apply import update_reminder
         
         # Create a mock reminder task for testing
         mock_reminder = {

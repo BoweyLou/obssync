@@ -29,25 +29,40 @@ import hashlib
 from dataclasses import dataclass
 import re
 
-# Import safe I/O utilities
-from lib.safe_io import (
-    safe_write_json_with_lock, 
-    generate_run_id, 
-    ensure_run_id_in_meta, 
-    check_concurrent_access
-)
-
-# Import observability utilities
-from lib.observability import get_logger
-
-# Import centralized path configuration
-from app_config import get_path
-
-# Import the new reminders gateway
-from reminders_gateway import (
-    RemindersGateway, RemindersError, AuthorizationError, EventKitImportError,
-    to_iso_dt, components_to_iso, reminder_priority_to_text, rrule_to_text, alarm_to_dict
-)
+# Import utilities and configuration
+try:
+    # When run as a module from obs_tools
+    from lib.safe_io import (
+        safe_write_json_with_lock,
+        generate_run_id,
+        ensure_run_id_in_meta,
+        check_concurrent_access
+    )
+    from lib.observability import get_logger
+    from lib.hybrid_reminders_collector import HybridRemindersCollector
+    from lib.reminders_domain import RemindersDataAdapter
+    from app_config import get_path, load_app_config
+    from reminders_gateway import (
+        RemindersGateway, RemindersError, AuthorizationError, EventKitImportError,
+        to_iso_dt, components_to_iso, reminder_priority_to_text, rrule_to_text, alarm_to_dict
+    )
+except ImportError:
+    # Fallback for direct script execution (deprecated - use obs_tools.py instead)
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+    from lib.safe_io import (
+        safe_write_json_with_lock,
+        generate_run_id,
+        ensure_run_id_in_meta,
+        check_concurrent_access
+    )
+    from lib.observability import get_logger
+    from lib.hybrid_reminders_collector import HybridRemindersCollector
+    from lib.reminders_domain import RemindersDataAdapter
+    from app_config import get_path, load_app_config
+    from reminders_gateway import (
+        RemindersGateway, RemindersError, AuthorizationError, EventKitImportError,
+        to_iso_dt, components_to_iso, reminder_priority_to_text, rrule_to_text, alarm_to_dict
+    )
 
 
 @dataclass
@@ -145,24 +160,90 @@ def _key_for(rem) -> str:
     return f"cid:{cal_id}|iid:{item_id}"
 
 
-def reminders_from_lists(lists: List[dict]) -> Tuple[List[object], Dict[str, dict], Dict[str, dict]]:
-    """Fetch reminders using the new RemindersGateway."""
+def reminders_from_lists_hybrid(lists: List[dict], logger, force_eventkit: bool = False) -> Tuple[Dict[str, dict], Dict[str, str], Dict[str, dict]]:
+    """
+    Fetch reminders using the hybrid collector (DB + EventKit).
+
+    Returns:
+        Tuple of (tasks_by_uuid, source_key_to_uuid, calendar_cache)
+    """
+    try:
+        # Initialize hybrid collector
+        collector = HybridRemindersCollector(logger=logger)
+
+        # Convert list format for collector
+        list_configs = [{'identifier': str(d['identifier'])} for d in lists]
+
+        # Collect using optimal method
+        snapshot = collector.collect_reminders_data(list_configs, force_eventkit=force_eventkit)
+
+        # Convert snapshot to legacy format for backward compatibility
+        tasks_by_uuid = {}
+        source_key_to_uuid = {}
+        calendar_cache = {}
+
+        for uuid, reminder in snapshot.reminders.items():
+            # Convert to schema v2 dict format
+            task_dict = RemindersDataAdapter.to_schema_v2_dict(reminder)
+            tasks_by_uuid[uuid] = task_dict
+
+            # Build source key mapping
+            if reminder.source_key:
+                source_key_to_uuid[reminder.source_key] = uuid
+
+        # Build calendar cache from lists
+        for list_id, list_info in snapshot.lists.items():
+            calendar_cache[list_id] = {
+                "name": list_info.name,
+                "identifier": list_info.identifier,
+                "source_name": list_info.source_name,
+                "source_type": list_info.source_type,
+                "color": list_info.color
+            }
+
+        # Log collection statistics
+        stats = collector.get_collection_stats()
+        logger.info(
+            f"Hybrid collection completed: mode={stats.mode_used.value}, "
+            f"items={stats.items_collected}, time={stats.collection_time_ms:.1f}ms, "
+            f"db_enrichment={stats.db_enrichment_rate:.1%}"
+        )
+
+        if stats.fallback_triggered:
+            logger.warning(f"Fallback triggered: {stats.fallback_reason}")
+
+        return tasks_by_uuid, source_key_to_uuid, calendar_cache
+
+    except Exception as e:
+        logger.error(f"Hybrid collection failed: {e}")
+        # Fall back to legacy EventKit-only collection
+        logger.info("Falling back to legacy EventKit collection")
+        return reminders_from_lists_legacy(lists)
+
+
+def reminders_from_lists_legacy(lists: List[dict]) -> Tuple[List[object], Dict[str, dict], Dict[str, dict]]:
+    """Legacy fetch reminders using EventKit gateway only."""
     gateway = RemindersGateway()
-    
+
     try:
         # Convert list format for gateway
         list_configs = [{'identifier': str(d['identifier'])} for d in lists]
-        
+
         # Fetch reminders and calendar cache
         reminders, calendar_cache = gateway.get_reminders_from_lists(list_configs)
-        
+
         # Create id_to_meta mapping for backward compatibility
         id_to_meta = {str(d["identifier"]): d for d in lists}
-        
+
         return reminders, id_to_meta, calendar_cache
-        
+
     except (RemindersError, AuthorizationError, EventKitImportError) as e:
         raise RuntimeError(str(e)) from e
+
+
+def reminders_from_lists(lists: List[dict]) -> Tuple[List[object], Dict[str, dict], Dict[str, dict]]:
+    """Fetch reminders using the RemindersGateway (maintained for backward compatibility)."""
+    return reminders_from_lists_legacy(lists)
 
 
 # Note: reminder_priority_to_text, rrule_to_text, alarm_to_dict are now imported from reminders_gateway
@@ -506,6 +587,92 @@ def collect_reminders_incremental(lists: List[dict], cache: Optional[SnapshotCac
     return changed_reminders, cache, metrics
 
 
+def collect_with_hybrid(args, logger, lists: List[dict]) -> int:
+    """
+    Collection using the hybrid DB+EventKit collector.
+
+    This provides a streamlined collection path that leverages the new
+    hybrid collector while maintaining full schema v2 compatibility.
+    """
+    logger.info("Using hybrid collector for reminders collection")
+
+    try:
+        # Use hybrid collector to get reminders data
+        tasks_by_uuid, source_to_uuid, calendar_cache = reminders_from_lists_hybrid(
+            lists, logger, force_eventkit=args.force_eventkit
+        )
+
+        # Build final index structure
+        now = now_iso()
+
+        # Load existing tasks for lifecycle management
+        existing_tasks, existing_source_to_uuid = load_existing(args.output)
+
+        # Merge with existing lifecycle data
+        final_tasks = {}
+        for uuid, task in tasks_by_uuid.items():
+            if uuid in existing_tasks:
+                # Preserve lifecycle fields from existing task
+                existing_task = existing_tasks[uuid]
+                task["created_at"] = existing_task.get("created_at", now)
+                task["updated_at"] = now
+                task["last_seen"] = now
+                task["missing_since"] = None  # Reset since we found it
+                task["deleted"] = False
+            else:
+                # New task
+                task["created_at"] = now
+                task["updated_at"] = now
+                task["last_seen"] = now
+                task["missing_since"] = None
+                task["deleted"] = False
+
+            final_tasks[uuid] = task
+
+        # Mark tasks that are no longer present as missing
+        for uuid, existing_task in existing_tasks.items():
+            if uuid not in final_tasks:
+                missing_task = existing_task.copy()
+                missing_task["last_seen"] = existing_task.get("last_seen", now)
+                missing_task["missing_since"] = now
+                missing_task["updated_at"] = now
+                final_tasks[uuid] = missing_task
+
+        # Prepare output structure
+        output_data = {
+            "meta": {
+                "schema": 2,
+                "generated_at": now,
+                "collector_type": "hybrid",
+                "run_id": logger.run_id
+            },
+            "tasks": final_tasks
+        }
+
+        # Add run ID to meta for tracking
+        output_data = ensure_run_id_in_meta(output_data, logger.run_id)
+
+        # Write output
+        safe_write_json_with_lock(args.output, output_data, indent=2)
+
+        logger.info("Collection completed successfully",
+                   total_tasks=len(final_tasks),
+                   new_tasks=len([t for t in final_tasks.values() if t.get("created_at") == now]),
+                   output_path=args.output)
+
+        print(f"Collected {len(final_tasks)} tasks and wrote to {args.output}")
+
+        # End run tracking
+        logger.end_run(True, f"Successfully collected {len(final_tasks)} tasks using hybrid collector")
+        return 0
+
+    except Exception as e:
+        logger.error("Hybrid collection failed", error=str(e))
+        logger.end_run(False, str(e))
+        print(f"Error during hybrid collection: {e}")
+        return 1
+
+
 def main(argv: List[str]) -> int:
     p = argparse.ArgumentParser(description="Collect Apple Reminders tasks into a single JSON index (schema v2).")
     p.add_argument("--use-config", action="store_true", help="Use saved lists from discover_reminders_lists.py")
@@ -514,6 +681,8 @@ def main(argv: List[str]) -> int:
     p.add_argument("--cache", default=get_path("reminders_snapshot_cache"), help="Snapshot cache JSON path")
     p.add_argument("--no-cache", action="store_true", help="Disable incremental caching (full rescan)")
     p.add_argument("--clear-cache", action="store_true", help="Clear cache before running")
+    p.add_argument("--use-hybrid", action="store_true", help="Use hybrid DB+EventKit collector (experimental)")
+    p.add_argument("--force-eventkit", action="store_true", help="Force EventKit-only collection even with hybrid mode")
     args = p.parse_args(argv)
     
     # Initialize logger and start run tracking
@@ -522,6 +691,8 @@ def main(argv: List[str]) -> int:
         "use_config": args.use_config,
         "no_cache": args.no_cache,
         "clear_cache": args.clear_cache,
+        "use_hybrid": args.use_hybrid,
+        "force_eventkit": args.force_eventkit,
         "config": args.config,
         "output": args.output,
         "cache": args.cache
@@ -566,6 +737,23 @@ def main(argv: List[str]) -> int:
             logger.info("No valid snapshot cache found, performing full scan")
             print("No valid snapshot cache found, performing full scan")
 
+    # Check if hybrid collector should be used
+    use_hybrid_collector = args.use_hybrid
+    if not use_hybrid_collector:
+        # Check configuration for automatic hybrid mode
+        try:
+            prefs, _ = load_app_config()
+            use_hybrid_collector = prefs.enable_db_reader
+            if use_hybrid_collector:
+                logger.info("Hybrid collector enabled via configuration")
+                print("Using hybrid DB+EventKit collector (enabled in config)")
+        except Exception:
+            pass
+
+    if use_hybrid_collector:
+        return collect_with_hybrid(args, logger, lists)
+
+    # Legacy collection path
     existing_tasks, source_to_uuid = load_existing(args.output)
     out_tasks: Dict[str, dict] = {}
     now = now_iso()
@@ -784,16 +972,25 @@ def main(argv: List[str]) -> int:
         out_tasks[uid] = rec
         processed_reminders += 1
 
-    # Carry forward tasks not seen this run
-    for uid, prev in existing_tasks.items():
-        if uid in out_tasks:
-            continue
-        out_tasks[uid] = prev
+    # Note: Instead of carrying forward all missing tasks (which preserves deleted reminders),
+    # we now treat reminders not returned by EventKit as permanently deleted.
+    # This fixes the issue where deleted reminders were being preserved indefinitely
+    # in the index because the carry-forward logic assumed missing = temporarily unavailable.
+    # 
+    # The previous logic was:
+    # - Carry forward tasks not seen this run
+    # - for uid, prev in existing_tasks.items():
+    #     if uid in out_tasks:
+    #         continue
+    #     out_tasks[uid] = prev
+    #
+    # Now we simply don't carry forward missing reminders, treating them as deleted.
 
     # Sort tasks by UUID for deterministic output
     tasks_sorted = {uid: out_tasks[uid] for uid in sorted(out_tasks)}
     new_reminders = len([t for t in tasks_sorted.values() if t.get("created_at") == now])
-    carried_forward = len(tasks_sorted) - processed_reminders
+    carried_forward = 0  # No longer carrying forward, so this is always 0
+    deleted_reminders = len(existing_tasks) - len(tasks_sorted) + new_reminders
     
     logger.update_counts(
         input_counts={
@@ -804,7 +1001,8 @@ def main(argv: List[str]) -> int:
             "reminders_processed": processed_reminders,
             "reminders_indexed": len(tasks_sorted),
             "new_reminders": new_reminders,
-            "carried_forward": max(0, carried_forward)
+            "carried_forward": max(0, carried_forward),
+            "deleted_reminders": max(0, deleted_reminders)
         }
     )
 
@@ -874,7 +1072,10 @@ def main(argv: List[str]) -> int:
                    output_path=args.output, 
                    task_count=len(tasks_sorted))
         summary_path = logger.end_run(True)
-        print(f"Wrote {len(tasks_sorted)} reminder task(s) to {args.output}")
+        if deleted_reminders > 0:
+            print(f"Wrote {len(tasks_sorted)} reminder task(s) to {args.output} (deleted {deleted_reminders} from index)")
+        else:
+            print(f"Wrote {len(tasks_sorted)} reminder task(s) to {args.output}")
         return 0
         
     except Exception as e:

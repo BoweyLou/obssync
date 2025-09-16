@@ -35,9 +35,9 @@
 
 ## TUI (Curses)
 - `app_tui.py` via `./bin/obs-app`.
-- Actions: Update All, Discover Vaults, Collect Obsidian, Discover Reminders, Collect Reminders, Build Links, Settings.
+- Actions: Update All, Update All and Apply, Discover Vaults, Collect Obsidian, Discover Reminders, Collect Reminders, Build Links, Settings.
 - Dashboard: totals and active counts; last-run summary (+new ~updated ?missing -deleted); links Δ; log pane.
-- Settings: min score, days tolerance, include done, ignore common, prune days.
+- Settings: min score, days tolerance, include done, ignore common, prune days, vault selection.
 - Discovery runs interactively; collect shows “Wrote …/No changes …”; lifecycle applied automatically.
 
 ## Defaults & Paths
@@ -53,3 +53,13 @@
 - Batch update: `./bin/obs-sync-update --include-done --min-score 0.8 --prune-days 7`
 - Suggest links only: `./bin/obs-sync-suggest --min-score 0.85`
 
+## End-to-End Tests
+- Simulated E2E: CI-safe, uses a fake Reminders gateway.
+  - Run: `pytest -m e2e tests/e2e/test_end_to_end_sync.py -v`
+  - Verifies: collection, linking, apply sync edits Markdown, create-missing, edge-cases.
+- Live E2E (macOS): Uses real Apple Reminders via EventKit, opt-in.
+  - Find list ID: `python obs_tools.py reminders discover --config ~/.config/reminders_lists.json`
+  - Export env var: `export E2E_REMINDERS_LIST_ID="<your-list-identifier>"`
+  - Run: `pytest -m e2e_live tests/e2e/test_end_to_end_live.py -v`
+  - Safety: Sets a temp `HOME`; uses a dedicated Reminders list; marks tasks complete instead of deleting.
+- More details: see `E2E_TEST_PLAN.md` (overview) and `LIVE_E2E_TEST.md` (live setup and safety).

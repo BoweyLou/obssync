@@ -4,7 +4,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="$(dirname "$SCRIPT_DIR")"
 PYTHON_BIN="$HOME/Library/Application Support/obs-tools/venv/bin/python3"
-SYNC_SCRIPT="$WORK_DIR/sync_links_apply.py"
+SYNC_SCRIPT="$WORK_DIR/obs_tools/commands/sync_links_apply.py"
 
 # Check if the Python binary exists
 if [[ ! -f "$PYTHON_BIN" ]]; then
@@ -20,4 +20,6 @@ if [[ ! -f "$SYNC_SCRIPT" ]]; then
 fi
 
 # Run the sync script with the correct Python and pass all arguments
+# Change to the work directory so imports work correctly
+cd "$WORK_DIR"
 exec "$PYTHON_BIN" "$SYNC_SCRIPT" "$@"

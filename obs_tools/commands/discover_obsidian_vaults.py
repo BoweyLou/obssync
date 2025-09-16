@@ -35,6 +35,9 @@ import sys
 from dataclasses import dataclass
 from typing import Iterable, List, Set, Tuple
 
+# Add the project root to the path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+
 # Import centralized path configuration
 from app_config import get_path
 

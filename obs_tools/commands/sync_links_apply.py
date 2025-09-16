@@ -25,9 +25,13 @@ import argparse
 import json
 import os
 import re
+import sys
 import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
+
+# Add the project root to the path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 # Import the new reminders gateway
 from reminders_gateway import RemindersGateway, RemindersError, AuthorizationError, EventKitImportError
@@ -133,7 +137,8 @@ END_BLOCK_RE = re.compile(r"\s+\^[A-Za-z0-9\-]+\s*$")
 DATE_ICON_RE = re.compile(r"📅\s*\d{4}-\d{1,2}-\d{1,2}")
 # Also strip Tasks plugin style "(due: YYYY-MM-DD)" with lenient month/day
 DUE_PAREN_RE = re.compile(r"\(\s*due\s*:\s*\d{4}-\d{1,2}-\d{1,2}\s*\)")
-PRIORITY_RE = re.compile(r"[⏫🔼🔽]")
+PRIORITY_RE = re.compile(r"[⏫🔼🔽🔺]")
+TAG_RE = re.compile(r"#\w+")  # Match hashtags like #reminders
 
 
 def _pad_date(iso_date: Optional[str]) -> Optional[str]:
@@ -152,11 +157,12 @@ def _pad_date(iso_date: Optional[str]) -> Optional[str]:
         return iso_date[:10]
 
 
-def edit_task_line(raw: str, new_status: Optional[str], new_due: Optional[str], new_priority: Optional[str]) -> str:
+def edit_task_line(raw: str, new_status: Optional[str], new_due: Optional[str], new_priority: Optional[str], new_description: Optional[str] = None) -> str:
     """Return edited line with requested changes. Only minimal tokens are changed.
     new_status: "todo" or "done" or None
     new_due: ISO date YYYY-MM-DD or None
     new_priority: high|medium|low or None
+    new_description: new task description/title or None
     """
     m = TASK_LINE_RE.match(raw.rstrip("\n"))
     if not m:
@@ -171,11 +177,53 @@ def edit_task_line(raw: str, new_status: Optional[str], new_due: Optional[str], 
         block_tail = body[mb.start():]
         body = body[: mb.start()].rstrip()
 
-    # Remove existing due tokens and priority
-    body = DATE_ICON_RE.sub("", body)
-    body = DUE_PAREN_RE.sub("", body)
-    body = PRIORITY_RE.sub("", body)
-    body = re.sub(r"\s+", " ", body).strip()
+    # Handle description replacement if requested
+    if new_description is not None:
+        # Safety checks for new description
+        if not isinstance(new_description, str):
+            # Invalid type, skip description update
+            pass
+        elif "\n" in new_description or "\r" in new_description:
+            # Contains line breaks that would break markdown formatting
+            pass
+        elif len(new_description.strip()) == 0:
+            # Empty description, skip update 
+            pass
+        elif len(new_description) > 500:
+            # Suspiciously long description, truncate for safety
+            new_description = new_description[:497] + "..."
+            # Extract and preserve existing tags, but rebuild body with new description
+            existing_tags = TAG_RE.findall(body)
+            # Use new description and append any existing tags
+            body = new_description.strip()
+            for tag in existing_tags:
+                if tag not in body:  # Don't duplicate tags
+                    body = f"{body} {tag}"
+            body = body.strip()
+        else:
+            # Safe description, proceed with replacement
+            # Extract and preserve existing tags, but rebuild body with new description
+            existing_tags = TAG_RE.findall(body)
+            # Use new description and append any existing tags
+            body = new_description.strip()
+            for tag in existing_tags:
+                if tag not in body:  # Don't duplicate tags
+                    body = f"{body} {tag}"
+            body = body.strip()
+    
+    # Remove existing due tokens and priority (but keep tags if description wasn't replaced)
+    if new_description is None:
+        # Only clean up metadata tokens if we're not replacing the whole description
+        body = DATE_ICON_RE.sub("", body)
+        body = DUE_PAREN_RE.sub("", body)
+        body = PRIORITY_RE.sub("", body)
+        body = re.sub(r"\s+", " ", body).strip()
+    else:
+        # For new descriptions, only remove date/priority tokens but preserve other formatting
+        body = DATE_ICON_RE.sub("", body)
+        body = DUE_PAREN_RE.sub("", body)
+        body = PRIORITY_RE.sub("", body)
+        body = re.sub(r"\s+", " ", body).strip()
 
     # Append priority
     if new_priority:
@@ -189,7 +237,7 @@ def edit_task_line(raw: str, new_status: Optional[str], new_due: Optional[str], 
     return f"{prefix}{status_char}] {body}{block_tail}"
 
 
-def update_obsidian_line(task: dict, apply: bool, changes: list) -> Tuple[bool, Optional[str], bool]:
+def update_obsidian_line(task: dict, apply: bool, changes: list, exact_match_only: bool = False) -> Tuple[bool, Optional[str], bool]:
     """Apply minimal edits to an Obsidian task line identified by block_id.
     Returns True if a change was applied.
     """
@@ -218,11 +266,14 @@ def update_obsidian_line(task: dict, apply: bool, changes: list) -> Tuple[bool, 
         if ln.strip() == (task.get("raw") or "").strip():
             line_no = i
             break
-    if line_no is None:
+    
+    # Only use block_id fallback if exact_match_only is False
+    if line_no is None and not exact_match_only:
         for i, ln in enumerate(lines):
             if ln.rstrip().endswith(f"^{block_id}"):
                 line_no = i
                 break
+    
     if line_no is None:
         return False, None, True
 
@@ -232,6 +283,7 @@ def update_obsidian_line(task: dict, apply: bool, changes: list) -> Tuple[bool, 
         new_status=task.get("_apply_status"),
         new_due=task.get("_apply_due"),
         new_priority=task.get("_apply_priority"),
+        new_description=task.get("_apply_description"),
     )
 
     if new_line != raw:
@@ -300,7 +352,7 @@ def resolve_obsidian_current(ot: dict) -> bool:
     pr = None
     mprio = PRIORITY_RE.search(raw)
     if mprio:
-        pr = {"⏫": "high", "🔼": "medium", "🔽": "low"}.get(mprio.group(0))
+        pr = {"⏫": "high", "🔼": "medium", "🔽": "low", "🔺": "low"}.get(mprio.group(0))
     ot["priority"] = pr
     return True
 
@@ -310,7 +362,8 @@ def update_reminder(rem_task: dict, apply: bool, fields: dict, ek_cache: dict, v
     # Get or create gateway instance from cache for session reuse
     gateway = ek_cache.get("gateway")
     if not gateway:
-        gateway = RemindersGateway()
+        # Use extended timeout for bulk sync operations
+        gateway = RemindersGateway(timeout=60)
         ek_cache["gateway"] = gateway
     
     try:
@@ -337,26 +390,45 @@ def update_reminder(rem_task: dict, apply: bool, fields: dict, ek_cache: dict, v
                 # No changes needed
                 return False
         else:
-            # Update failed
+            # Update failed - categorize and log errors with more detail
             if result.errors:
+                task_desc = rem_task.get('description', '(no description)')[:50]
+                item_id = rem_task.get("item_id", "unknown")
+                
                 for error in result.errors:
-                    if "not found" in error.lower():
+                    error_lower = error.lower()
+                    if "not found" in error_lower:
                         ek_cache.setdefault('reminder_not_found', 0)
                         ek_cache['reminder_not_found'] += 1
+                        if verbose or apply:
+                            print(f"EventKit: Reminder not found (ID: {item_id}, task: '{task_desc}')")
+                    elif "authorization" in error_lower or "permission" in error_lower:
+                        ek_cache.setdefault('auth_denied', 0) 
+                        ek_cache['auth_denied'] += 1
+                        if verbose or apply:
+                            print(f"EventKit: Authorization denied for reminder '{task_desc}' (ID: {item_id})")
+                    elif "field" in error_lower or "property" in error_lower:
+                        ek_cache.setdefault('field_update_errors', 0)
+                        ek_cache['field_update_errors'] += 1
+                        if verbose or apply:
+                            print(f"EventKit: Field update error for '{task_desc}' (ID: {item_id}): {error}")
                     else:
                         ek_cache.setdefault('save_failures', 0)
                         ek_cache['save_failures'] += 1
+                        if verbose or apply:
+                            print(f"EventKit: Save failed for '{task_desc}' (ID: {item_id}): {error}")
                 
-                if verbose or apply:  # Always show errors in apply mode
-                    task_desc = rem_task.get('description', '(no description)')[:50]
-                    print(f"EventKit update failed for '{task_desc}': {'; '.join(result.errors)}")
+                # Summary line for multiple errors
+                if len(result.errors) > 1 and (verbose or apply):
+                    print(f"EventKit: Total {len(result.errors)} errors for reminder '{task_desc}'")
             
             return False
     
     except EventKitImportError as e:
         # EventKit not available
+        task_desc = rem_task.get('description', '(no description)')[:50]
         if apply:
-            print(f"EventKit unavailable (missing PyObjC framework): {e}")
+            print(f"EventKit unavailable for reminder '{task_desc}' (missing PyObjC framework): {e}")
             print("  To fix: pip install pyobjc pyobjc-framework-EventKit")
             ek_cache.setdefault('import_failures', 0)
             ek_cache['import_failures'] += 1
@@ -364,33 +436,38 @@ def update_reminder(rem_task: dict, apply: bool, fields: dict, ek_cache: dict, v
         else:
             # In dry-run mode, we can show what would be done
             if verbose:
-                print(f"EventKit unavailable (dry-run mode): {e}")
+                print(f"EventKit unavailable for reminder '{task_desc}' (dry-run mode): {e}")
             return True
     
     except AuthorizationError as e:
         # Authorization failed
+        task_desc = rem_task.get('description', '(no description)')[:50]
+        item_id = rem_task.get("item_id", "unknown")
         if apply:
-            print(f"EventKit authorization failed: {e}")
+            print(f"EventKit authorization failed for reminder '{task_desc}' (ID: {item_id}): {e}")
+            print("  To fix: Grant Reminders access in System Preferences > Security & Privacy > Privacy > Reminders")
             ek_cache.setdefault('auth_denied', 0)
             ek_cache['auth_denied'] += 1
             return False
         else:
             # In dry-run mode, we can show what would be done
             if verbose:
-                print(f"EventKit authorization failed (dry-run mode): {e}")
+                print(f"EventKit authorization failed for reminder '{task_desc}' (dry-run mode): {e}")
             return True
     
     except RemindersError as e:
         # Other reminders error
+        task_desc = rem_task.get('description', '(no description)')[:50]
+        item_id = rem_task.get("item_id", "unknown")
         if apply:
-            print(f"EventKit error: {e}")
+            print(f"EventKit error for reminder '{task_desc}' (ID: {item_id}): {e}")
             ek_cache.setdefault('save_failures', 0)
             ek_cache['save_failures'] += 1
             return False
         else:
             # In dry-run mode, we can show what would be done
             if verbose:
-                print(f"EventKit error (dry-run mode): {e}")
+                print(f"EventKit error for reminder '{task_desc}' (dry-run mode): {e}")
             return True
 
 
@@ -401,6 +478,7 @@ def main(argv: List[str]) -> int:
     ap.add_argument("--links", default=DEFAULT_LINKS)
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--verbose", action="store_true", help="Print per-link planned/applied changes")
+    ap.add_argument("--exact-match-only", action="store_true", help="Require exact raw line match for Obsidian edits (no block_id fallback)")
     ap.add_argument("--changes-out", default=DEFAULT_CHANGESET, help="Write Obsidian changeset JSON when applying")
     ap.add_argument("--plan-out", help="Write verbose plan (text) to this file when --verbose is set")
     args = ap.parse_args(argv)
@@ -452,10 +530,19 @@ def main(argv: List[str]) -> int:
     # Verbose plan buffers
     verbose_lines: List[str] = []
     summary_counts = {
-        "obs_status": 0, "obs_due": 0, "obs_priority": 0,
-        "rem_status": 0, "rem_due": 0, "rem_title": 0,
+        "obs_status": 0, "obs_due": 0, "obs_priority": 0, "obs_title": 0,
+        "rem_status": 0, "rem_due": 0, "rem_priority": 0, "rem_title": 0,
         "links_changed": 0,
     }
+
+    # Progress tracking for EventKit operations
+    total_links = len(link_list)
+    processed_links = 0
+    last_progress_time = time.time()
+    eventkit_operations = 0
+    
+    if args.apply and total_links > 0:
+        print(f"Starting sync apply for {total_links} links...")
 
     for lk in link_list:
         ou = lk.get("obs_uuid"); ru = lk.get("rem_uuid")
@@ -520,7 +607,7 @@ def main(argv: List[str]) -> int:
         # Plan and apply
         any_change = False
         # Obsidian changes
-        if dir_status == "to_obs" or dir_due == "to_obs" or dir_prio == "to_obs":
+        if dir_status == "to_obs" or dir_due == "to_obs" or dir_prio == "to_obs" or dir_title == "to_obs":
             # Set transient markers for edit_task_line
             if not ot.get("block_id"):
                 skipped += 1
@@ -528,19 +615,21 @@ def main(argv: List[str]) -> int:
                 if args.verbose:
                     task_desc = ot.get('description', '(no description)')[:50]
                     file_path = (ot.get('file') or {}).get('relative_path', 'unknown')
-                    print(f"  Skipped Obsidian update for '{task_desc}' in {file_path}: no block_id present")
+                    print(f"  WARNING: Skipped Obsidian update for '{task_desc}' in {file_path}: no block_id present")
             else:
                 ot["_apply_status"] = rt.get("status") if dir_status == "to_obs" else None
                 ot["_apply_due"] = (rt.get("due")[:10] if rt.get("due") else None) if dir_due == "to_obs" else None
                 ot["_apply_priority"] = rt.get("priority") if dir_prio == "to_obs" else None
-                changed, new_line, not_found = update_obsidian_line(ot, apply=args.apply, changes=changeset)
+                ot["_apply_description"] = rt.get("description") if dir_title == "to_obs" else None
+                changed, new_line, not_found = update_obsidian_line(ot, apply=args.apply, changes=changeset, exact_match_only=args.exact_match_only)
                 if not_found:
                     skipped += 1
                     skipped_file_not_found += 1
                     if args.verbose:
                         task_desc = ot.get('description', '(no description)')[:50]
                         file_path = (ot.get('file') or {}).get('relative_path', 'unknown')
-                        print(f"  Skipped Obsidian update for '{task_desc}': task not found in {file_path}")
+                        exact_mode_suffix = " (exact match mode)" if args.exact_match_only else ""
+                        print(f"  WARNING: Skipped Obsidian update for '{task_desc}': task not found in {file_path}{exact_mode_suffix}")
                 if changed:
                     changed_obs += 1
                     any_change = True
@@ -555,9 +644,11 @@ def main(argv: List[str]) -> int:
                             ot["due"] = (rt.get("due")[:10] if rt.get("due") else None)
                         if dir_prio == "to_obs":
                             ot["priority"] = rt.get("priority")
+                        if dir_title == "to_obs":
+                            ot["description"] = rt.get("description")
                         ot["updated_at"] = now_iso()
             # Cleanup transient
-            for k in ("_apply_status", "_apply_due", "_apply_priority"):
+            for k in ("_apply_status", "_apply_due", "_apply_priority", "_apply_description"):
                 ot.pop(k, None)
 
         # Reminders changes
@@ -570,7 +661,31 @@ def main(argv: List[str]) -> int:
             "title_value": ot.get("description") if dir_title == "to_rem" else None,
         }
         if any(rem_fields.values()):
-            reminder_updated = update_reminder(rt, apply=args.apply, fields=rem_fields, ek_cache=ek_cache, verbose=args.verbose)
+            # Create updated reminder dict with winning Obsidian values
+            updated_rt = rt.copy()
+            if dir_status == "to_rem":
+                updated_rt["status"] = ot.get("status")
+            if dir_due == "to_rem":
+                updated_rt["due"] = ot.get("due")
+            if dir_prio == "to_rem":
+                updated_rt["priority"] = ot.get("priority")
+            
+            reminder_updated = update_reminder(updated_rt, apply=args.apply, fields=rem_fields, ek_cache=ek_cache, verbose=args.verbose)
+            eventkit_operations += 1
+            
+            # Show initial warning for large EventKit operations
+            if eventkit_operations == 1 and total_links > 1000 and args.apply:
+                print(f"⚠️ Processing {total_links} links with EventKit operations - this may take 10+ minutes")
+                print("EventKit operations are processed individually and can be slow - progress reports every 5 seconds")
+            
+            # Progress reporting for long-running EventKit operations
+            current_time = time.time()
+            if current_time - last_progress_time > 5.0:  # Report every 5 seconds
+                elapsed = int(current_time - last_progress_time)
+                progress_pct = int((eventkit_operations / total_links) * 100)
+                print(f"EventKit progress: {eventkit_operations}/{total_links} operations ({progress_pct}%) [+{elapsed}s]")
+                last_progress_time = current_time
+            
             if reminder_updated:
                 changed_rem += 1
                 any_change = True
@@ -590,7 +705,7 @@ def main(argv: List[str]) -> int:
         per_link_results.append({
             "obs_uuid": ou,
             "rem_uuid": ru,
-            "changed_obs": dir_status == "to_obs" or dir_due == "to_obs" or dir_prio == "to_obs",
+            "changed_obs": dir_status == "to_obs" or dir_due == "to_obs" or dir_prio == "to_obs" or dir_title == "to_obs",
             "changed_rem": any(rem_fields.values()),
         })
         
@@ -615,7 +730,7 @@ def main(argv: List[str]) -> int:
                 "timestamp": now_iso(),
                 "obs_task": ot,
                 "rem_task": rt,
-                "had_obs_change": dir_status == "to_obs" or dir_due == "to_obs" or dir_prio == "to_obs",
+                "had_obs_change": dir_status == "to_obs" or dir_due == "to_obs" or dir_prio == "to_obs" or dir_title == "to_obs",
                 "had_rem_change": any(rem_fields.values()),
                 "needs_field_refresh": needs_field_refresh
             }
@@ -631,7 +746,7 @@ def main(argv: List[str]) -> int:
                 dir_status in ("to_obs", "to_rem") or
                 dir_due in ("to_obs", "to_rem") or
                 dir_prio in ("to_obs", "to_rem") or
-                dir_title == "to_rem"
+                dir_title in ("to_obs", "to_rem")
             )
             if any_action:
                 obs_loc = f"{(ot.get('file') or {}).get('relative_path','?')}:{(ot.get('file') or {}).get('line','?')}"
@@ -652,7 +767,7 @@ def main(argv: List[str]) -> int:
                 verbose_lines.append(f"Task {title_display} — Obsidian[{obs_loc}] ↔ Reminders[{rem_loc}]")
                 summary_counts['links_changed'] += 1
                 # If Obsidian change requested but not actionable due to missing block_id, note it
-                if (dir_status == 'to_obs' or dir_due == 'to_obs' or dir_prio == 'to_obs') and not ot.get('block_id'):
+                if (dir_status == 'to_obs' or dir_due == 'to_obs' or dir_prio == 'to_obs' or dir_title == 'to_obs') and not ot.get('block_id'):
                     verbose_lines.append("  Skipped Obsidian update: no block_id present")
                 if dir_status == "to_obs":
                     verbose_lines.append(f"  Update Obsidian status: {val(ot.get('status'))} -> {val(rt.get('status'))}")
@@ -671,10 +786,23 @@ def main(argv: List[str]) -> int:
                     summary_counts['obs_priority'] += 1
                 elif dir_prio == "to_rem":
                     verbose_lines.append(f"  Update Reminders priority: {val(rt.get('priority'))} -> {val(ot.get('priority'))}")
-                    summary_counts['rem_priority'] = summary_counts.get('rem_priority', 0) + 1
-                if dir_title == "to_rem":
+                    summary_counts['rem_priority'] += 1
+                if dir_title == "to_obs":
+                    verbose_lines.append(f"  Update Obsidian title: {val(ot.get('description'))} -> {val(rt.get('description'))}")
+                    summary_counts['obs_title'] += 1
+                elif dir_title == "to_rem":
                     verbose_lines.append(f"  Update Reminders title: {val(rt.get('description'))} -> {val(ot.get('description'))}")
                     summary_counts['rem_title'] += 1
+
+        # Progress tracking - show overall progress every 100 links
+        processed_links += 1
+        if processed_links % 100 == 0 or processed_links == total_links:
+            current_time = time.time()
+            progress_pct = int((processed_links / total_links) * 100)
+            if processed_links == total_links:
+                print(f"Processing complete: {processed_links}/{total_links} links ({progress_pct}%) - {eventkit_operations} EventKit operations")
+            else:
+                print(f"Progress: {processed_links}/{total_links} links ({progress_pct}%) - {eventkit_operations} EventKit operations so far")
 
     # Update links with last_synced timestamps and field snapshots for processed links
     # Performance optimization: only process links that need updates
@@ -737,6 +865,16 @@ def main(argv: List[str]) -> int:
 
     # EventKit operation summary
     eventkit_summary = []
+    # Initialize variables to avoid NameError even if ek_cache is None
+    successes = 0
+    failures = 0
+    exceptions = 0
+    not_found = 0
+    field_errors = 0
+    import_failures = 0
+    auth_denied = 0
+    auth_timeouts = 0
+    
     if ek_cache:
         successes = ek_cache.get('save_successes', 0)
         failures = ek_cache.get('save_failures', 0)
@@ -775,8 +913,8 @@ def main(argv: List[str]) -> int:
     if args.verbose and verbose_lines:
         print("Plan summary:")
         print(f"  Links with actions: {summary_counts['links_changed']}")
-        print(f"  Obsidian updates: status={summary_counts['obs_status']}, due={summary_counts['obs_due']}, priority={summary_counts['obs_priority']}")
-        print(f"  Reminders updates: status={summary_counts['rem_status']}, due={summary_counts['rem_due']}, title={summary_counts.get('rem_title',0)}")
+        print(f"  Obsidian updates: status={summary_counts['obs_status']}, due={summary_counts['obs_due']}, priority={summary_counts['obs_priority']}, title={summary_counts['obs_title']}")
+        print(f"  Reminders updates: status={summary_counts['rem_status']}, due={summary_counts['rem_due']}, priority={summary_counts['rem_priority']}, title={summary_counts['rem_title']}")
         if eventkit_summary:
             print(f"  {' | '.join(eventkit_summary)}")
         print("")
@@ -789,8 +927,8 @@ def main(argv: List[str]) -> int:
                 with open(args.plan_out, "w", encoding="utf-8") as f:
                     f.write("Plan summary:\n")
                     f.write(f"  Links with actions: {summary_counts['links_changed']}\n")
-                    f.write(f"  Obsidian updates: status={summary_counts['obs_status']}, due={summary_counts['obs_due']}, priority={summary_counts['obs_priority']}\n")
-                    f.write(f"  Reminders updates: status={summary_counts['rem_status']}, due={summary_counts['rem_due']}, title={summary_counts.get('rem_title',0)}\n")
+                    f.write(f"  Obsidian updates: status={summary_counts['obs_status']}, due={summary_counts['obs_due']}, priority={summary_counts['obs_priority']}, title={summary_counts['obs_title']}\n")
+                    f.write(f"  Reminders updates: status={summary_counts['rem_status']}, due={summary_counts['rem_due']}, priority={summary_counts['rem_priority']}, title={summary_counts['rem_title']}\n")
                     if eventkit_summary:
                         f.write(f"  {' | '.join(eventkit_summary)}\n")
                     f.write("\n")
@@ -838,9 +976,11 @@ def main(argv: List[str]) -> int:
         "obs_status_changes": summary_counts['obs_status'],
         "obs_due_changes": summary_counts['obs_due'], 
         "obs_priority_changes": summary_counts['obs_priority'],
+        "obs_title_changes": summary_counts['obs_title'],
         "rem_status_changes": summary_counts['rem_status'],
         "rem_due_changes": summary_counts['rem_due'],
-        "rem_title_changes": summary_counts.get('rem_title', 0)
+        "rem_priority_changes": summary_counts['rem_priority'],
+        "rem_title_changes": summary_counts['rem_title']
     }
     
     # Log EventKit metrics if available
@@ -888,7 +1028,7 @@ def main(argv: List[str]) -> int:
     
     # Repeat plan summary at the end so it's visible even with limited logs
     if args.verbose and verbose_lines:
-        print(f"Plan links={summary_counts['links_changed']} obs(status={summary_counts['obs_status']},due={summary_counts['obs_due']},prio={summary_counts['obs_priority']}) rem(status={summary_counts['rem_status']},due={summary_counts['rem_due']},title={summary_counts.get('rem_title',0)})")
+        print(f"Plan links={summary_counts['links_changed']} obs(status={summary_counts['obs_status']},due={summary_counts['obs_due']},prio={summary_counts['obs_priority']},title={summary_counts['obs_title']}) rem(status={summary_counts['rem_status']},due={summary_counts['rem_due']},prio={summary_counts['rem_priority']},title={summary_counts['rem_title']})")
     
     summary_path = logger.end_run(True)
     return 0

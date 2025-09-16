@@ -51,10 +51,64 @@ def _sha(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()
 
 
+def code_block_tracker(lines: List[str]) -> Set[int]:
+    """Track which lines are inside code blocks and should be ignored for task parsing."""
+    in_fenced_block = False
+    in_indented_block = False
+    code_lines = set()
+    fence_pattern = re.compile(r"^\s*```")
+    
+    for idx, line in enumerate(lines, start=1):
+        # Check for fenced code blocks
+        if fence_pattern.match(line):
+            if in_fenced_block:
+                # End of fenced block
+                in_fenced_block = False
+            else:
+                # Start of fenced block
+                in_fenced_block = True
+            code_lines.add(idx)
+            continue
+            
+        # If in fenced block, mark line as code
+        if in_fenced_block:
+            code_lines.add(idx)
+            continue
+            
+        # Check for indented code blocks (4+ spaces or 1+ tabs at start)
+        # But exclude lines that look like list items (start with - or * or numbers)
+        stripped = line.lstrip()
+        if line and not stripped:
+            # Empty line - doesn't affect indented code block status
+            if in_indented_block:
+                code_lines.add(idx)
+            continue
+            
+        indent = len(line) - len(stripped)
+        has_tab_indent = line.startswith('\t')
+        
+        # Check if this looks like a list item (could be nested)
+        is_list_item = re.match(r'^\s*[-*+]\s', line) or re.match(r'^\s*\d+\.\s', line)
+        
+        is_indented_code = (indent >= 4 or has_tab_indent) and not is_list_item
+        
+        if is_indented_code:
+            in_indented_block = True
+            code_lines.add(idx)
+        else:
+            # Non-indented content or list items break indented code blocks
+            in_indented_block = False
+    
+    return code_lines
+
+
 def add_block_ids_in_file(path: str, apply: bool, collect_edits: bool) -> Tuple[int, int, List[Dict[str, Any]]]:
     with open(path, "r", encoding="utf-8") as f:
         lines = f.read().splitlines()
 
+    # Track code blocks to avoid adding IDs to tasks inside them
+    code_lines = code_block_tracker(lines)
+    
     changed = False
     modified = 0
     tasks_total = 0
@@ -62,6 +116,11 @@ def add_block_ids_in_file(path: str, apply: bool, collect_edits: bool) -> Tuple[
     edits: List[Dict[str, Any]] = []
 
     for idx, line in enumerate(lines, start=1):
+        # Skip lines that are inside code blocks
+        if idx in code_lines:
+            out_lines.append(line)
+            continue
+            
         m = TASK_RE.match(line)
         if not m:
             out_lines.append(line)
