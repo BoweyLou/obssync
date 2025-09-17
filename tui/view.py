@@ -141,6 +141,12 @@ class TUIView:
         prefs_x = 30
         if self.width > prefs_x + 20:  # Only show if we have room
             try:
+                # Show vault organization status prominently
+                if 2 < self.height:
+                    vault_org_status = "✅ ON" if prefs.vault_organization_enabled else "❌ OFF"
+                    self.stdscr.addstr(2, prefs_x, f"Vault Org: {vault_org_status}",
+                                     curses.A_BOLD if prefs.vault_organization_enabled else curses.A_NORMAL)
+
                 if 3 < self.height: self.stdscr.addstr(3, prefs_x, f"Min score: {prefs.min_score:.2f}")
                 if 4 < self.height: self.stdscr.addstr(4, prefs_x, f"Days tol: {prefs.days_tolerance}")
                 if 5 < self.height: self.stdscr.addstr(5, prefs_x, f"Include done: {prefs.include_done}")
@@ -157,6 +163,9 @@ class TUIView:
                 if 10 < self.height:
                     vault_label = current_vault[:18] + "..." if len(current_vault) > 21 else current_vault
                     self.stdscr.addstr(10, prefs_x, f"Default vault: {vault_label}")
+                if 11 < self.height and prefs.vault_organization_enabled:
+                    catch_all = prefs.catch_all_filename[:15] + "..." if len(prefs.catch_all_filename) > 18 else prefs.catch_all_filename
+                    self.stdscr.addstr(11, prefs_x, f"Catch-all: {catch_all}")
             except curses.error:
                 pass
     
@@ -503,6 +512,15 @@ class TUIView:
                 {"key": "include_done", "label": "Include Done", "type": "bool"},
                 {"key": "ignore_common", "label": "Ignore Common", "type": "bool"},
                 {"key": "prune_days", "label": "Prune Days", "type": "int"},
+            ],
+            "Vault Organization": [
+                {"key": "vault_organization_enabled", "label": "Vault Organization", "type": "bool"},
+                {"key": "auto_create_vault_lists", "label": "Auto-Create Lists", "type": "bool"},
+                {"key": "catch_all_filename", "label": "Catch-All File", "type": "str"},
+                {"key": "list_naming_template", "label": "List Template", "type": "str"},
+                {"key": "preserve_list_colors", "label": "Preserve Colors", "type": "bool"},
+                {"key": "cleanup_legacy_mappings", "label": "Cleanup Legacy", "type": "bool"},
+                {"key": "max_lists_per_cleanup", "label": "Max Cleanup Ops", "type": "int"},
             ],
             "Calendar": [
                 {"key": "calendar_vault_name", "label": "Calendar Vault", "type": "vault_selector"},

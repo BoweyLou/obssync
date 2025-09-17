@@ -214,8 +214,9 @@ class DataCacheService:
         if not curr_links:
             curr_links = []
 
-        prev_map = {link.get('obsidian_uuid'): link for link in prev_links}
-        curr_map = {link.get('obsidian_uuid'): link for link in curr_links}
+        # Use repository standard 'obs_uuid' with backwards compatibility fallback
+        prev_map = {(link.get('obs_uuid') or link.get('obsidian_uuid')): link for link in prev_links}
+        curr_map = {(link.get('obs_uuid') or link.get('obsidian_uuid')): link for link in curr_links}
 
         new_links = []
         replaced_links = []
@@ -225,7 +226,10 @@ class DataCacheService:
                 new_links.append(self._format_link(curr_link))
             else:
                 prev_link = prev_map[obs_id]
-                if prev_link.get('reminders_uuid') != curr_link.get('reminders_uuid'):
+                # Use repository standard 'rem_uuid' with backwards compatibility fallback
+                prev_rem_uuid = prev_link.get('rem_uuid') or prev_link.get('reminders_uuid')
+                curr_rem_uuid = curr_link.get('rem_uuid') or curr_link.get('reminders_uuid')
+                if prev_rem_uuid != curr_rem_uuid:
                     replaced_links.append(self._format_link(curr_link))
 
         return {'new': new_links, 'replaced': replaced_links}

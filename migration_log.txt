@@ -1,0 +1,37 @@
+📦 Bulk Task Migration (LIVE MIGRATION)
+============================================================
+🔧 Configuration:
+   Vault organization: True
+   Default vault: a12ce2b4-c29d-1dbc-07f5-89417f9fb7f2
+
+🗂️  Vault-List Mappings:
+   ✅ Personal → 4079E01C-39BA-42AE-9267-671ABEDD635C
+   ✅ Vault → 7063EE74-BFA7-41A8-81D5-62FB67D9B73C
+   ✅ Work → 7BDD3B64-C6CF-4AF5-B9ED-868D2B05F7DD
+\n📥 Collecting current reminders...
+Loaded snapshot cache with 4639 reminders
+Using incremental reminder collection...
+Snapshot cache saved to /Users/yannickbowe/.config/reminders_snapshot_cache.json
+Performance: 687ms, reminders checked: 4639, changed: 437, unchanged: 4202, change rate: 9.4%
+Warning: Concurrent access detected to /tmp/bulk_migration_reminders.json, proceeding with caution
+Wrote 4639 reminder task(s) to /tmp/bulk_migration_reminders.json
+   ✅ Collected 4639 tasks
+\n🎯 Default Lists (for migration):
+   - Reminders: BCE45ECD-F0F0-4B32-85E3-BEF97E0CFE6B
+   - Tasks: F3118FCD-D4D5-4CAF-8E2C-0A907F2AED07
+\n📊 Tasks in default lists: 3591
+🎯 Target: All default tasks → Work list (7BDD3B64-C6CF-4AF5-B9ED-868D2B05F7DD)
+\n🔄 Tasks to migrate: 3591
+\n📋 Sample tasks (first 5):
+   1. 'People'
+      Reminders → Work
+   2. '**Pilot Program Design**: Cross-domain quantum app...'
+      Reminders → Work
+   3. 'implement smart watching for updates'
+      Reminders → Work
+   4. 'Family booster shot dates'
+      Reminders → Work
+   5. 'Task with priority'
+      Reminders → Work
+\n⚠️  LIVE MIGRATION: This will move 3591 tasks!
+Continue? (yes/no): 

@@ -446,6 +446,10 @@ class RemindersOperations:
                 changed = True
                 
             if 'priority' in changes:
+                # Note: Priority values inverted in v2.0 to match Apple's native priority scheme
+                # where lower numbers = higher priority (1=high, 5=medium, 9=low)
+                # BREAKING CHANGE: This inverts the priority mapping from previous versions
+                # TODO: Run priority_migration.py to migrate existing reminders before v2.0 upgrade
                 priority_map = {'high': 1, 'medium': 5, 'low': 9, None: 0}
                 reminder.setPriority_(priority_map.get(changes['priority'], 0))
                 changed = True
@@ -522,6 +526,10 @@ class RemindersOperations:
                 reminder.setDueDateComponents_(comps)
                 
             if 'priority' in properties:
+                # Note: Priority values inverted in v2.0 to match Apple's native priority scheme
+                # where lower numbers = higher priority (1=high, 5=medium, 9=low)
+                # BREAKING CHANGE: This inverts the priority mapping from previous versions
+                # TODO: Run priority_migration.py to migrate existing reminders before v2.0 upgrade
                 priority_map = {'high': 1, 'medium': 5, 'low': 9, None: 0}
                 reminder.setPriority_(priority_map.get(properties['priority'], 0))
                 

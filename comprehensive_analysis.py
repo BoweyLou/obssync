@@ -14,6 +14,17 @@ without requiring live EventKit operations. It analyzes existing data to validat
 
 This gives us a complete picture of how well the sync system is working
 with real production data.
+
+Environment Variables:
+    OBSSYNC_WORK_DIR: Override the default ObsSync working directory path
+                     (defaults to ~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Work/obssync)
+
+Usage:
+    # Use default path detection
+    python comprehensive_analysis.py
+
+    # Override working directory
+    OBSSYNC_WORK_DIR=/path/to/custom/obsync python comprehensive_analysis.py
 """
 
 import json
@@ -29,9 +40,25 @@ import hashlib
 
 
 class ComprehensiveSyncAnalyzer:
-    """Comprehensive analyzer for sync system state and performance"""
+    """Comprehensive analyzer for sync system state and performance
+
+    Args:
+        work_dir: Path to the ObsSync working directory. If None, uses:
+                 1. OBSSYNC_WORK_DIR environment variable if set
+                 2. Otherwise defaults to ~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Work/obssync
+
+    Environment Variables:
+        OBSSYNC_WORK_DIR: Override the default working directory path
+    """
     
-    def __init__(self, work_dir: str = "/Users/yannickbowe/Library/Mobile Documents/iCloud~md~obsidian/Documents/Work/obssync"):
+    def __init__(self, work_dir: Optional[str] = None):
+        # Use environment variable if set, otherwise construct portable default
+        if work_dir is None:
+            work_dir = os.environ.get('OBSSYNC_WORK_DIR')
+            if work_dir is None:
+                # Fallback to portable default under user's home directory
+                work_dir = Path.home() / "Library" / "Mobile Documents" / "iCloud~md~obsidian" / "Documents" / "Work" / "obssync"
+
         self.work_dir = Path(work_dir)
         self.config_dir = Path.home() / ".config"
         

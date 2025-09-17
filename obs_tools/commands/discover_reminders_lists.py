@@ -22,6 +22,7 @@ import os
 import sys
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import List, Optional
 
 # Import centralized path configuration
@@ -190,17 +191,24 @@ def human_list(items: List[RemindersList]) -> str:
 
 def save_config(items: List[RemindersList], path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    payload = [
-        {
+
+    payload_lists = []
+    for it in items:
+        payload_lists.append({
             "name": it.name,
             "identifier": it.identifier,
             "source": {"name": it.source_name, "type": it.source_type},
             "calendar_type": it.calendar_type,
             "allows_modification": it.allows_modification,
             "color": it.color,
-        }
-        for it in items
-    ]
+        })
+
+    payload = {
+        "version": 2,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "lists": payload_lists,
+    }
+
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
     print(f"Saved {len(items)} list(s) to {path}")
@@ -212,14 +220,23 @@ def load_config(path: str) -> Optional[List[RemindersList]]:
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
+
+        if isinstance(data, dict):
+            entries = data.get("lists", [])
+        else:
+            entries = data
+
         out: List[RemindersList] = []
-        for d in data:
+        for d in entries:
+            if not isinstance(d, dict):
+                continue
+            source_info = d.get("source") if isinstance(d.get("source"), dict) else {}
             out.append(
                 RemindersList(
                     name=str(d.get("name", "")),
                     identifier=str(d.get("identifier", "")),
-                    source_name=(d.get("source") or {}).get("name"),
-                    source_type=(d.get("source") or {}).get("type"),
+                    source_name=(source_info or {}).get("name"),
+                    source_type=(source_info or {}).get("type"),
                     calendar_type=d.get("calendar_type"),
                     allows_modification=d.get("allows_modification"),
                     color=d.get("color"),
@@ -253,12 +270,13 @@ def confirm_saved(items: List[RemindersList]) -> bool:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Discover Apple Reminders lists via EventKit and save to a config file.")
     ap.add_argument("--config", default=get_path("reminders_lists"), help="Config JSON file path (default: ~/.config/reminders_lists.json)")
+    ap.add_argument("--force", "-f", action="store_true", help="Force fresh discovery, ignoring cached results")
     args = ap.parse_args(argv)
 
     cfg = os.path.abspath(os.path.expanduser(args.config))
 
     existing = load_config(cfg)
-    if existing:
+    if existing and not args.force:
         if confirm_saved(existing):
             print("Confirmed. Nothing to do.")
             return 0
@@ -268,6 +286,12 @@ def main(argv: list[str]) -> int:
             except OSError:
                 pass
             print("Cleared saved config. Discovering lists…")
+    elif existing and args.force:
+        try:
+            os.remove(cfg)
+        except OSError:
+            pass
+        print("Forced refresh. Discovering lists…")
 
     try:
         lists = ek_discover_lists()

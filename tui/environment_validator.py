@@ -49,12 +49,12 @@ class EnvironmentValidator:
         paths = self.config_service.get_paths()
 
         # Check Obsidian config
-        obs_config = os.path.expanduser(paths.get("obsidian_config", ""))
+        obs_config = os.path.expanduser(paths.get("obsidian_vaults", ""))
         if not os.path.exists(obs_config):
             issues.append("Obsidian vaults not configured (run 'Discover Vaults')")
 
         # Check Reminders config
-        rem_config = os.path.expanduser(paths.get("reminders_config", ""))
+        rem_config = os.path.expanduser(paths.get("reminders_lists", ""))
         if not os.path.exists(rem_config):
             issues.append("Reminders lists not configured (run 'Discover Reminders')")
 

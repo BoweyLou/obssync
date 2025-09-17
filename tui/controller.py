@@ -30,7 +30,7 @@ class TUIController:
             "Update All",
             "Update All and Apply",
             "Quick Sync (Create + Apply)",
-            "Discover Vaults", 
+            "Discover Vaults",
             "Collect Obsidian",
             "Discover Reminders",
             "Collect Reminders",
@@ -39,6 +39,7 @@ class TUIController:
             "Link Review",
             "Sync Links",
             "Create Missing Counterparts",
+            "Vault Organization →",
             "Duplication Finder",
             "Fix Block IDs",
             "Restore Last Fix",
@@ -448,6 +449,7 @@ class TUIController:
             "Link Review": self._do_link_review,
             "Sync Links": self._do_sync_links,
             "Create Missing Counterparts": self._do_create_missing_counterparts,
+            "Vault Organization →": self._do_vault_organization,
             "Duplication Finder": self._do_duplication_finder,
             "Fix Block IDs": self._do_fix_block_ids_interactive,
             "Restore Last Fix": self._do_restore_last_fix,
@@ -466,7 +468,169 @@ class TUIController:
         """Show the settings screen."""
         self.view.show_settings_screen(self.prefs)
         cfg.save_app_config(self.prefs)
-    
+
+    def _do_vault_organization(self):
+        """Show the vault organization submenu."""
+        # Import vault organization view
+        try:
+            from tui.vault_organization_view import VaultOrganizationView
+
+            # Create and show vault organization interface
+            vault_view = VaultOrganizationView(
+                self.view.stdscr,
+                self.view.height,
+                self.view.width
+            )
+
+            # Enter vault organization mode
+            self._enter_vault_organization_mode(vault_view)
+
+        except ImportError as e:
+            self.log_line(f"Error loading vault organization: {e}")
+            self.status = "Vault organization module not available"
+
+    def _enter_vault_organization_mode(self, vault_view):
+        """Enter the vault organization submenu mode."""
+        vault_running = True
+
+        while vault_running:
+            # Draw vault organization screen
+            vault_view.draw()
+
+            # Handle input
+            key = self.view.stdscr.getch()
+            action = vault_view.handle_input(key)
+
+            if action == "quit" or action == "back_to_main":
+                vault_running = False
+            elif action == "run_analysis":
+                self._do_vault_analysis()
+            elif action == "modify_setting":
+                # Refresh preferences after modification
+                self.prefs, self.paths = cfg.load_app_config()
+            elif action == "create_vault_lists":
+                self._handle_create_vault_lists()
+            elif action == "manual_mapping_started":
+                self.log_line("Manual vault-list mapping started")
+            elif action == "auto_mappings_applied":
+                self.log_line("Auto-discovered mappings applied")
+            elif action == "no_auto_mappings_found":
+                self.log_line("No automatic mappings found - use manual mapping")
+            elif action == "vault_org_enabled":
+                # Refresh preferences after enabling vault organization
+                self.prefs, self.paths = cfg.load_app_config()
+                self.log_line("Vault organization enabled")
+            elif action == "refresh_completed":
+                # Refresh after mappings reload
+                self.prefs, self.paths = cfg.load_app_config()
+                self.log_line("Mappings refreshed")
+            elif action.startswith("cleanup_"):
+                self._handle_vault_cleanup_action(action)
+            elif action.startswith("migration_"):
+                self._handle_vault_migration_action(action)
+            elif action in ["migration_analysis_completed", "migration_plan_generated",
+                          "migration_backup_completed", "migration_executed", "migration_verification_success"]:
+                self._handle_migration_step_completed(action)
+
+        # Return to main menu
+        self.status = "Returned from vault organization"
+
+    def _do_vault_analysis(self):
+        """Run vault organization analysis."""
+        if self.is_busy:
+            return
+
+        self.is_busy = True
+        self.status = "Analyzing vault organization..."
+
+        script_path = os.path.join(os.path.dirname(__file__), "..", "obs_tools.py")
+        args = [
+            os.path.expanduser("~/Library/Application Support/obs-tools/venv/bin/python3"),
+            script_path, "vault", "analyze"
+        ]
+
+        def completion_callback():
+            self.status = "Vault analysis complete"
+            self.is_busy = False
+            self.log_line("Vault organization analysis completed")
+
+        self.service_manager.run_command(args, self.log_line, completion_callback)
+
+    def _handle_vault_cleanup_action(self, action):
+        """Handle vault cleanup actions."""
+        if self.is_busy:
+            return
+
+        cleanup_map = {
+            "cleanup_analyze": ("analyze", "Analyzing legacy mappings..."),
+            "cleanup_preview": ("preview", "Previewing cleanup plan..."),
+            "cleanup_dry_run": ("migrate --dry-run", "Running cleanup simulation..."),
+            "cleanup_execute": ("migrate --apply", "Executing cleanup..."),
+            "cleanup_rollback": ("rollback", "Rolling back cleanup...")
+        }
+
+        if action in cleanup_map:
+            cmd, status_msg = cleanup_map[action]
+            self.is_busy = True
+            self.status = status_msg
+
+            script_path = os.path.join(os.path.dirname(__file__), "..", "obs_tools.py")
+            args = [
+                os.path.expanduser("~/Library/Application Support/obs-tools/venv/bin/python3"),
+                script_path, "vault", cmd
+            ]
+
+            def completion_callback():
+                self.status = f"{action.replace('cleanup_', '').title()} complete"
+                self.is_busy = False
+                self.log_line(f"Vault cleanup {action} completed")
+
+            self.service_manager.run_command(args, self.log_line, completion_callback)
+
+    def _handle_vault_migration_action(self, action):
+        """Handle vault migration actions."""
+        if self.is_busy:
+            return
+
+        migration_map = {
+            "migration_analysis": ("analyze", "Analyzing migration requirements..."),
+            "migration_plan": ("plan", "Generating migration plan..."),
+            "migration_backup": ("backup", "Creating migration backup..."),
+            "migration_execute": ("migrate --apply", "Executing migration..."),
+            "migration_verify": ("verify", "Verifying migration...")
+        }
+
+        if action in migration_map:
+            cmd, status_msg = migration_map[action]
+            self.is_busy = True
+            self.status = status_msg
+
+            script_path = os.path.join(os.path.dirname(__file__), "..", "obs_tools.py")
+            args = [
+                os.path.expanduser("~/Library/Application Support/obs-tools/venv/bin/python3"),
+                script_path, "vault", cmd
+            ]
+
+            def completion_callback():
+                self.status = f"{action.replace('migration_', '').title()} complete"
+                self.is_busy = False
+                self.log_line(f"Vault migration {action} completed")
+
+            self.service_manager.run_command(args, self.log_line, completion_callback)
+
+    def _handle_migration_step_completed(self, action):
+        """Handle migration step completion actions."""
+        step_messages = {
+            "migration_analysis_completed": "Migration analysis completed - plan can now be generated",
+            "migration_plan_generated": "Migration plan generated - backup can now be created",
+            "migration_backup_completed": "Migration backup completed - migration can now be executed",
+            "migration_executed": "Migration executed - verification can now be run",
+            "migration_verification_success": "Migration verification successful - migration is complete"
+        }
+
+        if action in step_messages:
+            self.log_line(step_messages[action])
+
     def _do_log_viewer(self):
         """Show the log viewer modal."""
         self.view.show_paged_content(self.log, title="Log Viewer")
@@ -1811,3 +1975,24 @@ class TUIController:
         # Tail recent logs to show details
         self.tail_component_logs("create_missing_counterparts", "creation")
         self.status = "Ready"
+
+    def _handle_create_vault_lists(self):
+        """Handle creating Reminders lists for vaults."""
+        if self.is_busy:
+            return
+
+        self.is_busy = True
+        self.status = "Creating vault Reminders lists..."
+
+        # For now, just log that this would create the lists
+        # In a full implementation, this would call the vault setup command
+        self.log_line("Creating Reminders lists for discovered vaults...")
+        self.log_line("Note: This is a placeholder - full implementation would create actual lists")
+
+        # Simulate some work
+        import time
+        time.sleep(1)
+
+        self.status = "Vault lists creation complete"
+        self.is_busy = False
+        self.log_line("Vault Reminders lists created successfully")

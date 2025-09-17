@@ -60,6 +60,7 @@ from obs_tools.commands import (
     app_tui,
     setup,
     test_db_reader,
+    vault_setup,
 )
 
 # Import configuration utilities
@@ -292,6 +293,18 @@ def main(argv: List[str]) -> int:
     sp_sync_create.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     sp_sync_create.add_argument("--plan-out", help="Save creation plan to JSON file")
 
+    # vault - Vault-based organization
+    sp_vault = subparsers.add_parser("vault", help="Vault-based organization tools")
+    sp_vault_sub = sp_vault.add_subparsers(dest="action")
+
+    sp_vault_setup = sp_vault_sub.add_parser("setup", help="Interactive vault organization setup")
+
+    sp_vault_analyze = sp_vault_sub.add_parser("analyze", help="Analyze vault organization opportunities")
+
+    sp_vault_migrate = sp_vault_sub.add_parser("migrate", help="Migrate to vault-based organization")
+    sp_vault_migrate.add_argument("--apply", action="store_true", help="Apply changes (default: dry-run)")
+    sp_vault_migrate.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+
     args, passthrough = parser.parse_known_args(argv)
 
     if not args.tool:
@@ -504,6 +517,21 @@ def main(argv: List[str]) -> int:
         if args.output_json:
             cmd_args.extend(["--output-json", args.output_json])
         return run_command_module(test_db_reader.main, cmd_args)
+    elif args.tool == "vault":
+        if args.action == "setup":
+            return run_command_module(vault_setup.main, ["setup"])
+        elif args.action == "analyze":
+            return run_command_module(vault_setup.main, ["analyze"])
+        elif args.action == "migrate":
+            cmd_args = ["migrate"]
+            if args.apply:
+                cmd_args.append("--apply")
+            if args.verbose:
+                cmd_args.append("--verbose")
+            return run_command_module(vault_setup.main, cmd_args)
+        else:
+            print("Unknown vault action. See --help.")
+            return 2
     else:
         print("Unknown action. See --help.")
         return 2

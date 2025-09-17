@@ -167,11 +167,21 @@ class AppPreferences:
     schema_validation_level: str = "warning"  # "strict", "warning", or "disabled"
     db_query_complexity: str = "standard"  # "minimal", "standard", "enhanced", "complete"
 
+    # Vault-based organization settings
+    vault_organization_enabled: bool = False  # Feature flag for vault-based organization
+    default_vault_id: Optional[str] = None  # Primary vault for catch-all file
+    catch_all_filename: str = "OtherAppleReminders.md"  # Name of catch-all file
+    auto_create_vault_lists: bool = True  # Automatically create lists for vaults
+    cleanup_legacy_mappings: bool = False  # Feature flag for cleanup phase
+    list_naming_template: str = "{vault_name}"  # Template for auto-created lists
+    preserve_list_colors: bool = True  # Keep colors when creating lists
+    max_lists_per_cleanup: int = 5  # Safety limit for bulk cleanup operations
+
     # Creation settings
     creation_defaults: CreationDefaults = None
     obs_to_rem_rules: list = None  # List[ObsToRemRule]
     rem_to_obs_rules: list = None  # List[RemToObsRule]
-    
+
     def __post_init__(self):
         if self.creation_defaults is None:
             self.creation_defaults = CreationDefaults()
@@ -228,6 +238,15 @@ def load_app_config() -> tuple[AppPreferences, dict]:
             db_read_timeout=float(data.get("db_read_timeout", 10.0)),
             schema_validation_level=str(data.get("schema_validation_level", "warning")),
             db_query_complexity=str(data.get("db_query_complexity", "standard")),
+            # Vault-based organization settings
+            vault_organization_enabled=bool(data.get("vault_organization_enabled", False)),
+            default_vault_id=data.get("default_vault_id"),
+            catch_all_filename=str(data.get("catch_all_filename", "OtherAppleReminders.md")),
+            auto_create_vault_lists=bool(data.get("auto_create_vault_lists", True)),
+            cleanup_legacy_mappings=bool(data.get("cleanup_legacy_mappings", False)),
+            list_naming_template=str(data.get("list_naming_template", "{vault_name}")),
+            preserve_list_colors=bool(data.get("preserve_list_colors", True)),
+            max_lists_per_cleanup=int(data.get("max_lists_per_cleanup", 5)),
             # Creation settings
             creation_defaults=creation_defaults,
             obs_to_rem_rules=obs_to_rem_rules,
@@ -275,6 +294,15 @@ def save_app_config(prefs: AppPreferences) -> None:
         "db_read_timeout": prefs.db_read_timeout,
         "schema_validation_level": prefs.schema_validation_level,
         "db_query_complexity": prefs.db_query_complexity,
+        # Vault-based organization settings
+        "vault_organization_enabled": prefs.vault_organization_enabled,
+        "default_vault_id": prefs.default_vault_id,
+        "catch_all_filename": prefs.catch_all_filename,
+        "auto_create_vault_lists": prefs.auto_create_vault_lists,
+        "cleanup_legacy_mappings": prefs.cleanup_legacy_mappings,
+        "list_naming_template": prefs.list_naming_template,
+        "preserve_list_colors": prefs.preserve_list_colors,
+        "max_lists_per_cleanup": prefs.max_lists_per_cleanup,
         # Creation settings
         "creation_defaults": {
             "obs_inbox_file": prefs.creation_defaults.obs_inbox_file,

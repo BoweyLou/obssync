@@ -131,8 +131,13 @@ def load_lists(config_path: str) -> List[dict]:
         raise FileNotFoundError(f"Reminders lists config not found: {cfg}")
     with open(cfg, "r", encoding="utf-8") as f:
         data = json.load(f)
+    if isinstance(data, dict):
+        entries = data.get("lists", [])
+    else:
+        entries = data
+
     lists: List[dict] = []
-    for item in data:
+    for item in entries:
         if isinstance(item, dict) and item.get("identifier"):
             lists.append(item)
     return lists

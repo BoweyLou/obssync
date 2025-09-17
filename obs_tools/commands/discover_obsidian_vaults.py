@@ -33,19 +33,26 @@ import json
 import os
 import sys
 from dataclasses import dataclass
-from typing import Iterable, List, Set, Tuple
+from datetime import datetime, timezone
+from typing import Iterable, List, Optional, Set, Tuple
 
 # Add the project root to the path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 # Import centralized path configuration
 from app_config import get_path
+from lib.vault_organization import generate_stable_vault_id
 
 
 @dataclass(frozen=True)
 class Vault:
     name: str
     path: str
+    # Vault-based organization fields
+    vault_id: str  # Stable UUID for the vault
+    is_default: bool = False  # Primary vault for catch-all
+    associated_list_id: Optional[str] = None  # Reminders list UUID
+    catch_all_file_path: Optional[str] = None  # Full path to OtherAppleReminders.md
 
 
 def path_is_vault(path: str) -> bool:
@@ -57,7 +64,8 @@ def human_list(vaults: List[Vault]) -> str:
         return "(none)"
     lines = []
     for i, v in enumerate(vaults, 1):
-        lines.append(f"{i}. {v.name}  —  {v.path}")
+        suffix = " [default]" if v.is_default else ""
+        lines.append(f"{i}. {v.name}  —  {v.path}{suffix}")
     return "\n".join(lines)
 
 
@@ -117,7 +125,11 @@ def find_vaults(roots: List[str], max_depth: int = 2) -> List[Vault]:
             ap = os.path.abspath(base)
             if ap not in seen_paths:
                 seen_paths.add(ap)
-                found.append(Vault(name=os.path.basename(ap) or ap, path=ap))
+                found.append(Vault(
+                    name=os.path.basename(ap) or ap,
+                    path=ap,
+                    vault_id=generate_stable_vault_id(ap)
+                ))
             # Do not descend into a vault further
             return
 
@@ -157,9 +169,33 @@ def prompt(msg: str, default: str | None = None) -> str:
 
 def save_config(vaults: List[Vault], path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    payload = [{"name": v.name, "path": v.path} for v in vaults]
+
+    default_vault_id: Optional[str] = None
+    payload_vaults = []
+    for v in vaults:
+        vault_id = v.vault_id or generate_stable_vault_id(v.path)
+        if v.is_default and not default_vault_id:
+            default_vault_id = vault_id
+
+        payload_vaults.append({
+            "name": v.name,
+            "path": v.path,
+            "vault_id": vault_id,
+            "is_default": v.is_default,
+            "associated_list_id": v.associated_list_id,
+            "catch_all_file_path": v.catch_all_file_path,
+        })
+
+    payload = {
+        "version": 2,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "vaults": payload_vaults,
+    }
+    if default_vault_id:
+        payload["default_vault_id"] = default_vault_id
+
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+        json.dump(payload, f, indent=2, ensure_ascii=False)
     print(f"Saved {len(vaults)} vault(s) to {path}")
 
 
@@ -169,7 +205,38 @@ def load_config(path: str) -> List[Vault] | None:
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        vaults = [Vault(name=str(d.get("name") or os.path.basename(d["path"])), path=str(d["path"])) for d in data]
+        vault_entries: List[dict]
+        default_vault_id: Optional[str] = None
+
+        if isinstance(data, dict):
+            vault_entries = data.get("vaults", [])
+            default_vault_id = data.get("default_vault_id")
+        elif isinstance(data, list):
+            vault_entries = data
+        else:
+            return None
+
+        vaults: List[Vault] = []
+        for entry in vault_entries:
+            if not isinstance(entry, dict) or "path" not in entry:
+                continue
+
+            path = os.path.abspath(os.path.expanduser(str(entry["path"])))
+            name = str(entry.get("name") or os.path.basename(path))
+            vault_id = entry.get("vault_id") or generate_stable_vault_id(path)
+            is_default = bool(entry.get("is_default", False))
+            if default_vault_id and vault_id == default_vault_id:
+                is_default = True
+
+            vaults.append(Vault(
+                name=name,
+                path=path,
+                vault_id=vault_id,
+                is_default=is_default,
+                associated_list_id=entry.get("associated_list_id"),
+                catch_all_file_path=entry.get("catch_all_file_path"),
+            ))
+
         return vaults
     except Exception as e:
         print(f"Warning: failed to read config {path}: {e}")
@@ -226,7 +293,7 @@ def interactive_discovery(config_path: str, initial_depth: int) -> None:
                 nm = os.path.basename(ap) or ap
                 if not path_is_vault(ap):
                     print(f"  Warning: {ap} does not contain a .obsidian folder (saving anyway).")
-                manual.append(Vault(name=nm, path=ap))
+                manual.append(Vault(name=nm, path=ap, vault_id=generate_stable_vault_id(ap)))
             # merge and dedupe by path
             combined = {v.path: v for v in (vaults + manual)}
             vaults = list(combined.values())
@@ -268,4 +335,3 @@ def main(argv: List[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-

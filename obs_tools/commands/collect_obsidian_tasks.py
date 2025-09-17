@@ -118,8 +118,14 @@ def load_vaults(config_path: str) -> List[Vault]:
         raise FileNotFoundError(f"Vaults config not found: {cfg}")
     with open(cfg, "r", encoding="utf-8") as f:
         data = json.load(f)
+
+    if isinstance(data, dict):
+        entries = data.get("vaults", [])
+    else:
+        entries = data
+
     vaults: List[Vault] = []
-    for item in data:
+    for item in entries:
         if isinstance(item, dict) and "path" in item:
             name = str(item.get("name") or os.path.basename(item["path"]))
             path = os.path.abspath(os.path.expanduser(str(item["path"])))

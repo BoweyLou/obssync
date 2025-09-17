@@ -49,6 +49,11 @@ class TestCreationConfig:
         assert config.include_done is False
         assert isinstance(config.obs_to_rem_rules, list)
         assert isinstance(config.rem_to_obs_rules, list)
+        assert config.vault_path_to_list == {}
+        assert config.vault_name_to_list == {}
+        assert config.default_vault_path is None
+        assert config.default_vault_name is None
+        assert config.default_vault_list_id is None
     
     def test_custom_config(self):
         """Test custom configuration values."""
@@ -64,6 +69,8 @@ class TestCreationConfig:
         assert config.max_creates_per_run == 25
         assert config.since_days == 14
         assert config.include_done is True
+        assert config.vault_path_to_list == {}
+        assert config.vault_name_to_list == {}
 
 
 class TestCreationPlan:
@@ -315,7 +322,7 @@ class TestMissingCounterpartsCreator:
             {"tag": "#personal", "calendar_id": "personal-cal"}
         ]
         creator.config.rem_default_calendar_id = "default-cal"
-        
+
         # Task with matching rule
         work_task = {"tags": ["#work", "#project"]}
         assert creator.determine_target_calendar(work_task) == "work-cal"
@@ -327,7 +334,32 @@ class TestMissingCounterpartsCreator:
         # Task with no tags
         no_tags_task = {"tags": []}
         assert creator.determine_target_calendar(no_tags_task) == "default-cal"
-    
+
+    def test_determine_target_calendar_uses_vault_mapping(self, creator):
+        """Ensure vault path/name mapping overrides defaults."""
+        creator.config.obs_to_rem_rules = []
+        target_path = os.path.abspath("/tmp/vaults/work")
+        creator.config.vault_path_to_list = {target_path: "vault-cal"}
+        creator.config.vault_name_to_list = {"work": "vault-cal"}
+        obs_task = {"tags": [], "vault": {"name": "Work", "path": target_path}}
+
+        assert creator.determine_target_calendar(obs_task) == "vault-cal"
+
+    def test_determine_target_calendar_default_vault_fallback(self, creator):
+        """Use default vault mapping when no explicit vault mapping exists."""
+        creator.config.obs_to_rem_rules = []
+        creator.config.rem_default_calendar_id = "global-default"
+        creator.config.default_vault_path = os.path.abspath("/tmp/default_vault")
+        creator.config.default_vault_name = "DefaultVault"
+        creator.config.default_vault_list_id = "default-vault-cal"
+
+        obs_task = {"tags": [], "vault": {"name": "DefaultVault", "path": "/tmp/default_vault"}}
+        assert creator.determine_target_calendar(obs_task) == "default-vault-cal"
+
+        # When vault metadata missing, fall back to default vault list before global default
+        obs_task_no_vault = {"tags": []}
+        assert creator.determine_target_calendar(obs_task_no_vault) == "default-vault-cal"
+
     def test_determine_target_file(self, creator):
         """Test determining target file for Reminders tasks."""
         # Set up mapping rules

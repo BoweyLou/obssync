@@ -93,21 +93,32 @@ class CreationConfig:
     # Default targets
     obs_inbox_file: str = "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Work/Tasks.md"
     rem_default_calendar_id: Optional[str] = None
-    
+
     # Mapping rules
     obs_to_rem_rules: List[Dict] = None  # [{"tag": "#work", "calendar_id": "XXX"}]
     rem_to_obs_rules: List[Dict] = None  # [{"list_name": "Work", "target_file": "path", "heading": "Imported"}]
-    
+
+    # Vault-based routing
+    vault_path_to_list: Dict[str, str] = None  # absolute vault path -> reminders list id
+    vault_name_to_list: Dict[str, str] = None  # normalized vault name -> reminders list id
+    default_vault_path: Optional[str] = None
+    default_vault_name: Optional[str] = None
+    default_vault_list_id: Optional[str] = None
+
     # Limits and filters
     max_creates_per_run: int = 50
     since_days: int = 30
     include_done: bool = False
-    
+
     def __post_init__(self):
         if self.obs_to_rem_rules is None:
             self.obs_to_rem_rules = []
         if self.rem_to_obs_rules is None:
             self.rem_to_obs_rules = []
+        if self.vault_path_to_list is None:
+            self.vault_path_to_list = {}
+        if self.vault_name_to_list is None:
+            self.vault_name_to_list = {}
 
 
 class MissingCounterpartsCreator:
@@ -274,7 +285,34 @@ class MissingCounterpartsCreator:
             rule_tag = rule.get("tag", "")
             if rule_tag in task_tags:
                 return rule.get("calendar_id")
-        
+
+        # Attempt vault-based routing when vault metadata is available
+        vault_info = obs_task.get("vault") or {}
+        vault_path = vault_info.get("path")
+        if vault_path:
+            normalized_path = os.path.abspath(os.path.expanduser(vault_path))
+            mapped_calendar = self.config.vault_path_to_list.get(normalized_path)
+            if mapped_calendar:
+                return mapped_calendar
+
+        vault_name = vault_info.get("name")
+        if vault_name:
+            mapped_calendar = self.config.vault_name_to_list.get(vault_name.strip().lower())
+            if mapped_calendar:
+                return mapped_calendar
+
+        if self.config.default_vault_list_id:
+            if vault_path and self.config.default_vault_path:
+                normalized_path = os.path.abspath(os.path.expanduser(vault_path))
+                if normalized_path == self.config.default_vault_path:
+                    return self.config.default_vault_list_id
+            elif vault_name and self.config.default_vault_name:
+                if vault_name.strip().lower() == self.config.default_vault_name.strip().lower():
+                    return self.config.default_vault_list_id
+            elif not vault_path and not vault_name:
+                # Fallback when vault cannot be determined
+                return self.config.default_vault_list_id
+
         # Use default calendar
         return self.config.rem_default_calendar_id
     
@@ -599,8 +637,49 @@ def load_config_from_app_json() -> CreationConfig:
     """Load configuration from TUI app.json file and convert to CreationConfig."""
     try:
         # Load the TUI configuration
-        prefs, _ = app_config.load_app_config()
-        
+        prefs, paths = app_config.load_app_config()
+
+        # Derive vault-to-list mappings when vault organization is enabled
+        vault_path_to_list: Dict[str, str] = {}
+        vault_name_to_list: Dict[str, str] = {}
+        default_vault_path: Optional[str] = None
+        default_vault_name: Optional[str] = None
+        default_vault_list_id: Optional[str] = None
+
+        try:
+            vaults_cfg = safe_load_json(paths.get("obsidian_vaults", ""), {})
+        except Exception:
+            vaults_cfg = {}
+
+        if isinstance(vaults_cfg, dict):
+            default_vault_id = vaults_cfg.get("default_vault_id") or prefs.default_vault_id
+            for entry in vaults_cfg.get("vaults", []):
+                if not isinstance(entry, dict):
+                    continue
+
+                list_id = entry.get("associated_list_id")
+                if not list_id:
+                    continue
+
+                vault_path = entry.get("path")
+                if vault_path:
+                    normalized_path = os.path.abspath(os.path.expanduser(vault_path))
+                    vault_path_to_list[normalized_path] = list_id
+
+                vault_name = entry.get("name")
+                if vault_name:
+                    vault_name_to_list[vault_name.strip().lower()] = list_id
+
+                vault_id = entry.get("vault_id")
+                is_default = entry.get("is_default") or (default_vault_id and vault_id == default_vault_id)
+                if is_default:
+                    default_vault_path = os.path.abspath(os.path.expanduser(vault_path)) if vault_path else default_vault_path
+                    default_vault_name = vault_name or default_vault_name
+                    default_vault_list_id = list_id or default_vault_list_id
+
+        if default_vault_list_id is None:
+            default_vault_list_id = prefs.creation_defaults.rem_default_calendar_id
+
         # Convert to CreationConfig format
         config = CreationConfig(
             obs_inbox_file=prefs.creation_defaults.obs_inbox_file,
@@ -616,11 +695,16 @@ def load_config_from_app_json() -> CreationConfig:
                 "list_name": rule.list_name,
                 "target_file": rule.target_file,
                 "heading": rule.heading
-            } for rule in prefs.rem_to_obs_rules]
+            } for rule in prefs.rem_to_obs_rules],
+            vault_path_to_list=vault_path_to_list,
+            vault_name_to_list=vault_name_to_list,
+            default_vault_path=default_vault_path,
+            default_vault_name=default_vault_name,
+            default_vault_list_id=default_vault_list_id
         )
-        
+
         return config
-        
+
     except Exception as e:
         # Fall back to default config if app.json loading fails
         print(f"Warning: Could not load configuration from app.json ({e}), using defaults")
