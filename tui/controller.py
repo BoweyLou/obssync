@@ -712,7 +712,6 @@ class TUIController:
             "Planning creates",
             "Ensuring anchors",
             "Refreshing Obsidian",
-            "Re-planning creates",
             "Creating counterparts",
             "Applying sync"
         ]
@@ -821,68 +820,52 @@ class TUIController:
                                 args_obs2.append("--ignore-common")
 
                             def after_collect_obs2():
-                                # Advance to next step
-                                self.advance_operation_step("Re-planning creates")
-
-                                # Re-plan so obsidian:// URLs include block IDs
-                                plan2_path = os.path.join(base, f"quick_sync_plan2_{ts}.json")
-                                args_plan2 = [
+                                # Now create missing counterparts using the original plan
+                                self.advance_operation_step("Creating counterparts")
+                                args_create = [
                                     self.get_managed_python(), "-u", script, "sync", "create",
                                     "--obs", self.paths["obsidian_index"],
                                     "--rem", self.paths["reminders_index"],
                                     "--links", self.paths["links"],
-                                    "--plan-out", plan2_path,
+                                    "--apply",
                                 ]
 
-                                def after_plan2():
-                                    # Advance to next step
-                                    self.advance_operation_step("Creating counterparts")
-                                    args_create = [
-                                        self.get_managed_python(), "-u", script, "sync", "create",
+                                def after_create():
+                                    # Advance to final step
+                                    self.advance_operation_step("Applying sync")
+                                    args_apply = [
+                                        self.get_managed_python(), "-u", script, "sync", "apply",
                                         "--obs", self.paths["obsidian_index"],
                                         "--rem", self.paths["reminders_index"],
                                         "--links", self.paths["links"],
                                         "--apply",
                                     ]
 
-                                    def after_create():
-                                        # Advance to final step
-                                        self.advance_operation_step("Applying sync")
-                                        args_apply = [
-                                            self.get_managed_python(), "-u", script, "sync", "apply",
-                                            "--obs", self.paths["obsidian_index"],
-                                            "--rem", self.paths["reminders_index"],
-                                            "--links", self.paths["links"],
-                                            "--apply",
-                                        ]
+                                    def done():
+                                        # Show structured summary instead of raw logs
+                                        summary_msg = self.format_completion_summary("sync_links_apply", "Sync apply")
+                                        if summary_msg:
+                                            self.log_line(summary_msg)
+                                        else:
+                                            self.log_line("Quick Sync complete")
 
-                                        def done():
-                                            # Show structured summary instead of raw logs
-                                            summary_msg = self.format_completion_summary("sync_links_apply", "Sync apply")
-                                            if summary_msg:
-                                                self.log_line(summary_msg)
-                                            else:
-                                                self.log_line("Quick Sync complete")
+                                        # Show backup artifact path
+                                        summary_path = self.find_latest_run_summary("sync_links_apply")
+                                        if summary_path:
+                                            self.log_line(f"Details: {os.path.basename(summary_path)}")
 
-                                            # Show backup artifact path
-                                            summary_path = self.find_latest_run_summary("sync_links_apply")
-                                            if summary_path:
-                                                self.log_line(f"Details: {os.path.basename(summary_path)}")
+                                        # Complete the multi-step operation
+                                        created = output_counts.get('created', 0) if 'output_counts' in locals() else 0
+                                        updated = output_counts.get('updated', 0) if 'output_counts' in locals() else 0
+                                        summary = f"+{created}/{updated} created/updated" if created + updated > 0 else "No changes"
+                                        self.complete_multi_step_operation(summary)
 
-                                            # Complete the multi-step operation
-                                            created = output_counts.get('created', 0) if 'output_counts' in locals() else 0
-                                            updated = output_counts.get('updated', 0) if 'output_counts' in locals() else 0
-                                            summary = f"+{created}/{updated} created/updated" if created + updated > 0 else "No changes"
-                                            self.complete_multi_step_operation(summary)
+                                        self.status = "Quick Sync complete"
+                                        self.is_busy = False
 
-                                            self.status = "Quick Sync complete"
-                                            self.is_busy = False
+                                    self.service_manager.run_command(args_apply, self.log_line, done)
 
-                                        self.service_manager.run_command(args_apply, self.log_line, done)
-
-                                    self.service_manager.run_command(args_create, self.log_line, after_create)
-
-                                self.service_manager.run_command(args_plan2, self.log_line, after_plan2)
+                                self.service_manager.run_command(args_create, self.log_line, after_create)
 
                             self.service_manager.run_command(args_obs2, self.log_line, after_collect_obs2)
 

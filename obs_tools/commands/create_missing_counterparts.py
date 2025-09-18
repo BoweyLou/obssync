@@ -320,13 +320,32 @@ class MissingCounterpartsCreator:
         """Determine target Obsidian file and heading for a Reminders task."""
         list_info = rem_task.get("list", {})
         list_name = list_info.get("name", "")
-        
-        # Check mapping rules first
+        list_id = list_info.get("id", "")
+
+        # First priority: Check vault organization mappings
+        if self.config.vault_path_to_list or self.config.vault_name_to_list:
+            # Find which vault this Reminders list maps to (reverse lookup)
+            target_vault_path = None
+
+            # Search by list ID in vault mappings
+            for vault_path, mapped_list_id in self.config.vault_path_to_list.items():
+                if mapped_list_id == list_id:
+                    target_vault_path = vault_path
+                    break
+
+            if target_vault_path:
+                # Create counterpart in the vault's catch-all file
+                catch_all_filename = getattr(self.config, 'catch_all_filename', 'OtherAppleReminders.md')
+                target_file = os.path.join(target_vault_path, catch_all_filename)
+                self.logger.info(f"Vault organization: {list_name} → {target_file}")
+                return target_file, None
+
+        # Second priority: Check manual mapping rules
         for rule in self.config.rem_to_obs_rules:
             if rule.get("list_name") == list_name:
                 return rule.get("target_file", self.config.obs_inbox_file), rule.get("heading")
-        
-        # Use default inbox file
+
+        # Last resort: Use default inbox file
         return self.config.obs_inbox_file, None
     
     def create_plan(self, obs_index: Dict, rem_index: Dict, links_data: Dict, 

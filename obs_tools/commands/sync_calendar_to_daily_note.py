@@ -73,7 +73,10 @@ def find_obsidian_vault_path(preferred_vault_name: Optional[str] = None) -> Opti
         current_dir_vault = None
         first_vault = None
 
-        for vault in vaults_data:
+        # Handle both old and new vault config formats
+        vaults_list = vaults_data.get('vaults', vaults_data) if isinstance(vaults_data, dict) else vaults_data
+
+        for vault in vaults_list:
             if isinstance(vault, dict) and 'path' in vault:
                 vault_path = vault['path']
                 vault_name = vault.get('name', '')
