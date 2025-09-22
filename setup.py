@@ -36,14 +36,14 @@ def get_version():
     return '1.0.0'
 
 setup(
-    name='obs-tools',
+    name='obs-sync',
     version=get_version(),
     description='Advanced task management system with bidirectional sync between Obsidian and Apple Reminders',
     long_description=open('README.md').read() if os.path.isfile('README.md') else '',
     long_description_content_type='text/markdown',
-    author='obs-tools',
-    author_email='obs-tools@example.com',
-    url='https://github.com/obs-tools/obs-tools',
+    author='obs-sync',
+    author_email='obs-sync@example.com',
+    url='https://github.com/obs-sync/obs-sync',
     
     packages=find_packages(include=['lib', 'tui', 'obs_tools', 'obs_tools.*']),
     py_modules=['obs_tools'],
@@ -75,7 +75,7 @@ setup(
     
     entry_points={
         'console_scripts': [
-            'obs-tools=obs_tools:main',
+            'obs-sync=obs_tools:main',
             'obs-app=obs_tools:main',
             'obs-sync=obs_tools:main',
             'obs-collect=obs_tools:main',
@@ -118,8 +118,8 @@ setup(
     keywords=['obsidian', 'reminders', 'tasks', 'sync', 'productivity', 'markdown'],
     
     project_urls={
-        'Bug Reports': 'https://github.com/obs-tools/obs-tools/issues',
-        'Source': 'https://github.com/obs-tools/obs-tools',
-        'Documentation': 'https://github.com/obs-tools/obs-tools/blob/main/README.md',
+'Bug Reports': 'https://github.com/obs-sync/obs-sync/issues',
+        'Source': 'https://github.com/obs-sync/obs-sync',
+        'Documentation': 'https://github.com/obs-sync/obs-sync/blob/main/README.md',
     },
 )

@@ -3,9 +3,9 @@ requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "obs-tools"
+name = "obs-sync"
 authors = [
-    {name = "obs-tools contributors"}
+    {name = "obs-sync contributors"}
 ]
 description = "Advanced task management system with bidirectional sync between Obsidian and Apple Reminders"
 readme = "README.md"
@@ -50,25 +50,29 @@ dev = [
 
 [project.scripts]
 obs-tools = "obs_tools:main"
-obs-app = "obs_tools:main"
 obs-sync = "obs_tools:main" 
-obs-collect = "obs_tools:main"
 
 [project.urls]
-Homepage = "https://github.com/obs-tools/obs-tools"
-Repository = "https://github.com/obs-tools/obs-tools"
-Issues = "https://github.com/obs-tools/obs-tools/issues"
-Documentation = "https://github.com/obs-tools/obs-tools/blob/main/README.md"
+Homepage = "https://github.com/obs-sync/obs-sync"
+Repository = "https://github.com/obs-sync/obs-sync"
+Issues = "https://github.com/obs-sync/obs-sync/issues"
+Documentation = "https://github.com/obs-sync/obs-sync/blob/main/README.md"
 
 [tool.setuptools]
-packages = ["lib", "tui", "obs_tools", "obs_tools.commands"]
-py-modules = ["obs_tools"]
+packages = [
+    "obs_sync",
+    "obs_sync.commands",
+    "obs_sync.core",
+    "obs_sync.calendar",
+    "obs_sync.obsidian",
+    "obs_sync.reminders",
+    "obs_sync.sync",
+    "obs_sync.utils",
+    "obs_tools",
+    "lib",
+]
 
 [tool.setuptools.package-data]
-lib = ["*.py"]
-tui = ["*.py"] 
-"obs_tools" = ["*.py"]
-"obs_tools.commands" = ["*.py"]
 "" = ["Resources/schemas/*.json", "bin/*"]
 
 [tool.setuptools_scm]

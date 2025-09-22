@@ -1,66 +1,9 @@
-#!/bin/bash
-# Convenience script to run the complete sync workflow (like the TUI does)
+#!/usr/bin/env bash
+# obs-sync - Main entry point for new architecture
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK_DIR="$(dirname "$SCRIPT_DIR")"
-PYTHON_BIN="$HOME/Library/Application Support/obs-tools/venv/bin/python3"
-OBS_TOOLS="$WORK_DIR/obs_tools.py"
+set -euo pipefail
 
-# Check if the Python binary exists
-if [[ ! -f "$PYTHON_BIN" ]]; then
-    echo "Error: obs-tools Python environment not found at $PYTHON_BIN"
-    echo "Please ensure obs-tools is properly installed."
-    exit 1
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
 
-# Check if obs_tools.py exists
-if [[ ! -f "$OBS_TOOLS" ]]; then
-    echo "Error: obs_tools.py not found at $OBS_TOOLS"
-    exit 1
-fi
-
-# Default to dry-run if no arguments provided
-if [[ $# -eq 0 ]]; then
-    echo "Usage: obs-sync [MODE] [additional-args...]"
-    echo ""
-    echo "Modes:"
-    echo "  dry, apply         - Use existing indices (fast, normal workflow)"
-    echo "  refresh-dry        - Refresh indices then show sync plan (slow)"
-    echo "  refresh-apply      - Refresh indices then apply changes (slow)"
-    echo ""
-    echo "Examples:"
-    echo "  obs-sync dry --verbose      # Show pending sync changes"
-    echo "  obs-sync apply              # Apply pending sync changes"
-    echo "  obs-sync refresh-dry        # Full refresh + show sync plan"
-    echo "  obs-sync refresh-apply      # Full refresh + apply changes"
-    exit 1
-fi
-
-MODE="$1"
-shift
-
-case "$MODE" in
-    "dry"|"plan")
-        # Run sync apply without --apply flag (dry run) - no refresh to see current pending changes
-        exec "$PYTHON_BIN" "$OBS_TOOLS" sync apply "$@"
-        ;;
-    "apply"|"run")
-        # Run sync apply with --apply flag - no refresh to avoid resetting the indices
-        exec "$PYTHON_BIN" "$OBS_TOOLS" sync apply --apply "$@"
-        ;;
-    "refresh-dry"|"refresh-plan")
-        # Run with refresh for full update + dry run
-        exec "$PYTHON_BIN" "$OBS_TOOLS" sync apply --refresh "$@"
-        ;;
-    "refresh-apply"|"refresh-run")
-        # Run with refresh for full update + apply
-        exec "$PYTHON_BIN" "$OBS_TOOLS" sync apply --refresh --apply "$@"
-        ;;
-    *)
-        echo "Error: Unknown mode '$MODE'. Available modes:"
-        echo "  dry, apply     - Use existing indices (fast)"
-        echo "  refresh-dry    - Refresh indices then dry run"
-        echo "  refresh-apply  - Refresh indices then apply"
-        exit 1
-        ;;
-esac
+# Route all commands through new architecture
+exec python3 "$SCRIPT_DIR/obs_tools.py" "$@"
