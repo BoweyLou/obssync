@@ -6,6 +6,7 @@ import uuid
 import json
 import os
 from ..core.models import ObsidianTask, RemindersTask, SyncLink, TaskStatus
+from ..core.paths import get_path_manager
 from ..obsidian.tasks import ObsidianTaskManager
 from ..reminders.tasks import RemindersTaskManager
 from .matcher import TaskMatcher
@@ -48,7 +49,10 @@ class SyncEngine:
             "rem_updated": 0,
             "obs_created": 0,
             "rem_created": 0,
+            "obs_deleted": 0,
+            "rem_deleted": 0,
             "links_created": 0,
+            "links_deleted": 0,
             "conflicts_resolved": 0,
         }
         
@@ -56,7 +60,11 @@ class SyncEngine:
         self.vault_path = None
         self.inbox_path = config.get("obsidian_inbox_path", "AppleRemindersInbox.md")
         self.default_calendar_id = config.get("default_calendar_id")
-        self.links_path = config.get("links_path", "~/.config/sync_links.json")
+        
+        # Use PathManager for default links_path
+        manager = get_path_manager()
+        default_links_path = str(manager.sync_links_path)
+        self.links_path = config.get("links_path", default_links_path)
 
     def sync(
         self,
@@ -77,7 +85,10 @@ class SyncEngine:
             "rem_updated": 0,
             "obs_created": 0,
             "rem_created": 0,
+            "obs_deleted": 0,
+            "rem_deleted": 0,
             "links_created": 0,
+            "links_deleted": 0,
             "conflicts_resolved": 0,
         }
         
@@ -110,9 +121,48 @@ class SyncEngine:
         # 2. Load existing links and find matches
         self.logger.info("Loading existing links...")
         existing_links = self._load_existing_links()
+
+        # 2.5 Detect orphaned tasks (tasks whose counterpart was deleted)
+        orphaned_rem_uuids, orphaned_obs_uuids = self._detect_orphaned_tasks(
+            existing_links, obs_tasks_all, rem_tasks_all
+        )
+
+        if orphaned_rem_uuids:
+            self.logger.info(f"Found {len(orphaned_rem_uuids)} orphaned Reminders tasks (Obsidian counterparts deleted)")
+        if orphaned_obs_uuids:
+            self.logger.info(f"Found {len(orphaned_obs_uuids)} orphaned Obsidian tasks (Reminders counterparts deleted)")
+
+        # Handle orphaned tasks based on sync direction
+        if self.direction in ("both", "obs-to-rem") and orphaned_rem_uuids:
+            # Delete orphaned Reminders tasks when Obsidian task was deleted
+            for rem_uuid in orphaned_rem_uuids:
+                rem_task = self._find_task(rem_tasks_all, rem_uuid)
+                if rem_task and not dry_run:
+                    self.logger.info(f"Deleting orphaned Reminders task: {rem_task.title}")
+                    self.rem_manager.delete_task(rem_task)
+                self.changes_made["rem_deleted"] = self.changes_made.get("rem_deleted", 0) + 1
+
+                # Clean up the link immediately
+                existing_links = [link for link in existing_links
+                                if link.rem_uuid != rem_uuid]
+                self.changes_made["links_deleted"] = self.changes_made.get("links_deleted", 0) + 1
+
+        if self.direction in ("both", "rem-to-obs") and orphaned_obs_uuids:
+            # Delete orphaned Obsidian tasks when Reminders task was deleted
+            for obs_uuid in orphaned_obs_uuids:
+                obs_task = self._find_task(obs_tasks_all, obs_uuid)
+                if obs_task and not dry_run:
+                    self.logger.info(f"Deleting orphaned Obsidian task: {obs_task.description}")
+                    self.obs_manager.delete_task(obs_task)
+                self.changes_made["obs_deleted"] = self.changes_made.get("obs_deleted", 0) + 1
+
+                # Clean up the link immediately
+                existing_links = [link for link in existing_links
+                                if link.obs_uuid != obs_uuid]
+                self.changes_made["links_deleted"] = self.changes_made.get("links_deleted", 0) + 1
         
         self.logger.info("Finding task matches...")
-        # Use all tasks (including completed) for matching to detect status changes
+        # Pass updated existing_links to matcher (after orphaned links removed)
         links = self.matcher.find_matches(obs_tasks_all, rem_tasks_all, existing_links)
         self.logger.info(f"Found {len(links)} matched pairs")
         
@@ -123,7 +173,11 @@ class SyncEngine:
         # Find unmatched tasks, but exclude completed ones from counterpart creation
         unmatched_obs_all = [t for t in obs_tasks_all if t.uuid not in matched_obs_uuids]
         unmatched_rem_all = [t for t in rem_tasks_all if t.uuid not in matched_rem_uuids]
-        
+
+        # IMPORTANT: Exclude orphaned tasks from unmatched lists to prevent recreation
+        unmatched_obs_all = [t for t in unmatched_obs_all if t.uuid not in orphaned_obs_uuids]
+        unmatched_rem_all = [t for t in unmatched_rem_all if t.uuid not in orphaned_rem_uuids]
+
         # Filter out completed tasks from counterpart creation
         unmatched_obs = [t for t in unmatched_obs_all if t.status != TaskStatus.DONE]
         unmatched_rem = [t for t in unmatched_rem_all if t.status != TaskStatus.DONE]
@@ -150,9 +204,21 @@ class SyncEngine:
             self._apply_sync_changes(obs_task, rem_task, conflicts, dry_run)
         
         # 6. Save links to persistent storage
-        if not dry_run and links:
-            self._persist_links(links)
-        
+        if not dry_run:
+            # Clean up links for deleted tasks
+            cleaned_links = []
+            for link in links:
+                # Only keep links where both tasks still exist
+                if (self._find_task(obs_tasks_all, link.obs_uuid) and
+                    self._find_task(rem_tasks_all, link.rem_uuid)):
+                    cleaned_links.append(link)
+                else:
+                    self.changes_made["links_deleted"] += 1
+                    self.logger.debug(f"Removing stale link: {link.obs_uuid} <-> {link.rem_uuid}")
+
+            if cleaned_links:
+                self._persist_links(cleaned_links)
+
         # Return results
         return {
             'success': True,
@@ -339,6 +405,33 @@ class SyncEngine:
                 self.changes_made["links_created"] += 1
         
         return new_links
+    
+    def _detect_orphaned_tasks(self, existing_links: List[SyncLink],
+                               obs_tasks: List[ObsidianTask],
+                               rem_tasks: List[RemindersTask]) -> tuple[Set[str], Set[str]]:
+        """Detect tasks that had links but their counterpart was deleted.
+
+        Returns:
+            Tuple of (orphaned_rem_uuids, orphaned_obs_uuids)
+        """
+        obs_uuid_set = {task.uuid for task in obs_tasks}
+        rem_uuid_set = {task.uuid for task in rem_tasks}
+
+        orphaned_rem_uuids = set()
+        orphaned_obs_uuids = set()
+
+        for link in existing_links:
+            # If Obsidian task deleted but Reminders task still exists
+            if link.obs_uuid not in obs_uuid_set and link.rem_uuid in rem_uuid_set:
+                orphaned_rem_uuids.add(link.rem_uuid)
+                self.logger.debug(f"Found orphaned Reminders task: {link.rem_uuid} (Obsidian counterpart {link.obs_uuid} was deleted)")
+
+            # If Reminders task deleted but Obsidian task still exists
+            elif link.rem_uuid not in rem_uuid_set and link.obs_uuid in obs_uuid_set:
+                orphaned_obs_uuids.add(link.obs_uuid)
+                self.logger.debug(f"Found orphaned Obsidian task: {link.obs_uuid} (Reminders counterpart {link.rem_uuid} was deleted)")
+
+        return orphaned_rem_uuids, orphaned_obs_uuids
     
     def _load_existing_links(self) -> List[SyncLink]:
         """Load existing sync links from file."""

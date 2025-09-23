@@ -16,7 +16,8 @@ from obs_sync.commands import (
     SetupCommand,
     SyncCommand,
     CalendarCommand,
-    InstallDepsCommand
+    InstallDepsCommand,
+    MigrateCommand
 )
 
 
@@ -101,6 +102,27 @@ Examples:
         help='Show what would be done without making changes'
     )
     
+    # Migrate command
+    migrate_parser = subparsers.add_parser(
+        'migrate',
+        help='Migrate configuration from legacy locations'
+    )
+    migrate_parser.add_argument(
+        '--check',
+        action='store_true',
+        help='Check for legacy files without migrating'
+    )
+    migrate_parser.add_argument(
+        '--apply',
+        action='store_true',
+        help='Perform the migration'
+    )
+    migrate_parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Force migration even if target files exist'
+    )
+    
     args = parser.parse_args(argv)
     
     # Configure logging if verbose mode is enabled
@@ -141,6 +163,19 @@ Examples:
         elif args.command == 'calendar':
             cmd = CalendarCommand(config, verbose=args.verbose)
             success = cmd.run(date_str=args.date, dry_run=args.dry_run)
+            
+        elif args.command == 'migrate':
+            # Migrate command doesn't need config
+            cmd = MigrateCommand(verbose=args.verbose)
+            if args.check:
+                success = cmd.run(check_only=True)
+            elif args.apply or args.force:
+                success = cmd.run(check_only=False, force=args.force)
+            else:
+                # Default to check mode if no flags specified
+                success = cmd.run(check_only=True)
+                if success:
+                    print("\n💡 Use 'obs-sync migrate --apply' to perform the migration.")
             
         else:
             print(f"Unknown command: {args.command}")

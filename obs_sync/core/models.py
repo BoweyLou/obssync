@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 import os
 import json
+from .paths import get_path_manager
 
 
 def _normalize_path(path: str) -> str:
@@ -269,14 +270,29 @@ class SyncConfig:
     days_tolerance: int = 1
     include_completed: bool = False
     obsidian_inbox_path: str = "AppleRemindersInbox.md"
-    obsidian_index_path: str = "~/.config/obsidian_tasks_index.json"
-    reminders_index_path: str = "~/.config/reminders_tasks_index.json"
-    links_path: str = "~/.config/sync_links.json"
+    obsidian_index_path: Optional[str] = None
+    reminders_index_path: Optional[str] = None
+    links_path: Optional[str] = None
 
     def __post_init__(self) -> None:
-        self.obsidian_index_path = _normalize_path(self.obsidian_index_path)
-        self.reminders_index_path = _normalize_path(self.reminders_index_path)
-        self.links_path = _normalize_path(self.links_path)
+        # Get the path manager
+        manager = get_path_manager()
+
+        # Set default paths using PathManager if not provided
+        if self.obsidian_index_path is None:
+            self.obsidian_index_path = str(manager.obsidian_index_path)
+        else:
+            self.obsidian_index_path = _normalize_path(self.obsidian_index_path)
+
+        if self.reminders_index_path is None:
+            self.reminders_index_path = str(manager.reminders_index_path)
+        else:
+            self.reminders_index_path = _normalize_path(self.reminders_index_path)
+
+        if self.links_path is None:
+            self.links_path = str(manager.sync_links_path)
+        else:
+            self.links_path = _normalize_path(self.links_path)
 
     # ------------------------------------------------------------------
     # Convenience helpers
@@ -363,6 +379,7 @@ class SyncConfig:
 
         paths = data.get("paths", {})
 
+        # Pass None for paths not in config to use PathManager defaults
         config = cls(
             vaults=vaults,
             default_vault_id=data.get("default_vault_id"),
@@ -376,13 +393,13 @@ class SyncConfig:
                 "obsidian_inbox_path", data.get("obsidian_inbox_path", "AppleRemindersInbox.md")
             ),
             obsidian_index_path=paths.get(
-                "obsidian_index", data.get("obsidian_index_path", cls.obsidian_index_path)
+                "obsidian_index", data.get("obsidian_index_path", None)
             ),
             reminders_index_path=paths.get(
-                "reminders_index", data.get("reminders_index_path", cls.reminders_index_path)
+                "reminders_index", data.get("reminders_index_path", None)
             ),
             links_path=paths.get(
-                "links", data.get("links_path", cls.links_path)
+                "links", data.get("links_path", None)
             ),
         )
 
