@@ -2,8 +2,10 @@
 
 import os
 import uuid
+import hashlib
+import base64
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 import logging
 
 from ..core.models import ObsidianTask, Priority, TaskStatus
@@ -16,6 +18,52 @@ class ObsidianTaskManager:
     def __init__(self, logger: Optional[logging.Logger] = None):
         self.logger = logger or logging.getLogger(__name__)
         self.include_completed = True  # Default to including completed tasks
+
+    def _stable_uuid_for_task(
+        self,
+        vault_path: str,
+        file_path: str,
+        line_number: int,
+        description: str,
+        existing_ids: Optional[Set[str]] = None
+    ) -> str:
+        """Generate a stable, deterministic UUID for a task based on its attributes.
+        
+        Args:
+            vault_path: Path to the vault
+            file_path: Relative file path within vault
+            line_number: Line number in the file
+            description: Task description (normalized)
+            existing_ids: Set of existing block IDs to avoid collisions
+            
+        Returns:
+            A stable block ID (without the 'obs-' prefix)
+        """
+        # Normalize description for consistent hashing
+        normalized_desc = description.strip().lower()
+        vault_id = os.path.basename(vault_path)
+        
+        # Create unique string from stable attributes
+        unique_string = f"{vault_id}|{file_path}|{line_number}|{normalized_desc}"
+        
+        # Generate SHA1 hash and encode as base32 for human-friendly IDs
+        hash_obj = hashlib.sha1(unique_string.encode('utf-8'))
+        # Use base32 encoding for readable IDs, take first 8 chars
+        base_id = base64.b32encode(hash_obj.digest()).decode('ascii')[:8].lower()
+        
+        # Handle collisions by appending counter if needed
+        block_id = base_id
+        counter = 1
+        
+        if existing_ids:
+            while block_id in existing_ids:
+                block_id = f"{base_id}-{counter}"
+                counter += 1
+                if counter > 100:  # Safety valve
+                    self.logger.warning(f"High collision count for task ID generation: {base_id}")
+                    break
+        
+        return block_id
 
     def list_tasks(self, vault_path: str, include_completed: Optional[bool] = None) -> List[ObsidianTask]:
         """List all tasks in a vault.
@@ -57,13 +105,30 @@ class ObsidianTaskManager:
             with open(full_path, "r", encoding="utf-8") as handle:
                 lines = handle.readlines()
 
+            # Collect existing block IDs to avoid collisions
+            existing_block_ids: Set[str] = set()
+            for line in lines:
+                task_data = parse_markdown_task(line.rstrip())
+                if task_data and task_data.get("block_id"):
+                    existing_block_ids.add(task_data["block_id"])
+
             for line_num, raw_line in enumerate(lines, 1):
                 task_data = parse_markdown_task(raw_line.rstrip())
                 if not task_data:
                     continue
 
                 block_id = task_data.get("block_id")
-                uuid_value = block_id or uuid.uuid4().hex[:8]
+                if block_id:
+                    uuid_value = block_id
+                else:
+                    # Generate stable UUID for tasks without block IDs
+                    uuid_value = self._stable_uuid_for_task(
+                        vault_path=vault_path,
+                        file_path=rel_file_path,
+                        line_number=line_num,
+                        description=task_data["description"],
+                        existing_ids=existing_block_ids
+                    )
 
                 task = ObsidianTask(
                     uuid=f"obs-{uuid_value}",
@@ -106,8 +171,35 @@ class ObsidianTaskManager:
                 title = os.path.basename(file_path).replace(".md", "")
                 handle.write(f"# {title}\n\n")
 
+        # Generate stable block ID if not provided
         if not task.block_id:
-            task.block_id = f"t-{uuid.uuid4().hex[:12]}"
+            # Read existing file to collect existing block IDs for collision avoidance
+            existing_block_ids: Set[str] = set()
+            if os.path.exists(full_path):
+                with open(full_path, "r", encoding="utf-8") as handle:
+                    lines = handle.readlines()
+                for line in lines:
+                    task_data = parse_markdown_task(line.rstrip())
+                    if task_data and task_data.get("block_id"):
+                        existing_block_ids.add(task_data["block_id"])
+            
+            # Calculate line number where new task will be added
+            next_line_num = self._count_lines(full_path) + 1
+            
+            # Generate stable UUID based on task attributes
+            task.block_id = self._stable_uuid_for_task(
+                vault_path=vault_path,
+                file_path=file_path,
+                line_number=next_line_num,
+                description=task.description,
+                existing_ids=existing_block_ids
+            )
+            # Update UUID to match the canonical format that list_tasks will generate
+            task.uuid = f"obs-{task.block_id}"
+        
+        # Always ensure UUID aligns with block_id, whether generated or provided
+        if task.block_id:
+            task.uuid = f"obs-{task.block_id}"
 
         new_line = format_task_line(
             description=task.description,
@@ -182,6 +274,27 @@ class ObsidianTaskManager:
 
         if "tags" in changes:
             task.tags = list(changes["tags"])
+
+        # Generate stable block ID if task doesn't have one (helps with migration)
+        if not task.block_id:
+            # Collect existing block IDs to avoid collisions
+            existing_block_ids: Set[str] = set()
+            for line in lines:
+                task_data = parse_markdown_task(line.rstrip())
+                if task_data and task_data.get("block_id"):
+                    existing_block_ids.add(task_data["block_id"])
+            
+            # Generate stable UUID for this task
+            task.block_id = self._stable_uuid_for_task(
+                vault_path=task.vault_path,
+                file_path=task.file_path,
+                line_number=task.line_number,
+                description=task.description,
+                existing_ids=existing_block_ids
+            )
+            # Update UUID to match the canonical format that list_tasks will generate
+            task.uuid = f"obs-{task.block_id}"
+            self.logger.debug(f"Generated stable block ID '{task.block_id}' and updated UUID to '{task.uuid}' for task during update")
 
         new_line = format_task_line(
             description=task.description,

@@ -58,6 +58,7 @@ class SyncEngine:
         
         # Store vault path and config for task creation
         self.vault_path = None
+        self.vault_id = None  # Add vault_id tracking
         self.inbox_path = config.get("obsidian_inbox_path", "AppleRemindersInbox.md")
         self.default_calendar_id = config.get("default_calendar_id")
         
@@ -65,6 +66,9 @@ class SyncEngine:
         manager = get_path_manager()
         default_links_path = str(manager.sync_links_path)
         self.links_path = config.get("links_path", default_links_path)
+        
+        # Flag to track when links need persisting due to normalization
+        self._links_need_persist = False
 
     def sync(
         self,
@@ -94,6 +98,21 @@ class SyncEngine:
         
         # Store vault path for creation operations
         self.vault_path = vault_path
+        self.vault_id = os.path.basename(vault_path)  # Simple vault ID from path
+
+        # If we have a config object with mappings, try to get the specific calendar_id
+        if hasattr(self.config, 'get_vault_mapping'):
+            # First try to find the vault by path to get its proper vault_id
+            vault_specific_calendar = None
+            for vault in getattr(self.config, 'vaults', []):
+                if vault.path == vault_path:
+                    vault_specific_calendar = self.config.get_vault_mapping(vault.vault_id)
+                    self.vault_id = vault.vault_id
+                    break
+
+            # Use vault-specific calendar if found, otherwise use provided list_ids
+            if vault_specific_calendar and not list_ids:
+                list_ids = [vault_specific_calendar]
 
         # 1. Collect tasks from both systems
         # Always include completed tasks for matching to detect status changes
@@ -121,16 +140,36 @@ class SyncEngine:
         # 2. Load existing links and find matches
         self.logger.info("Loading existing links...")
         existing_links = self._load_existing_links()
+        
+        # 2.1 Normalize existing links to fix stale UUID references
+        existing_links = self._normalize_links(existing_links, obs_tasks_all, rem_tasks_all)
+        
+        # Persist normalized links if any were updated (even in dry-run to fix data)
+        if hasattr(self, '_links_need_persist') and self._links_need_persist:
+            self.logger.info("Persisting normalized links to fix stale UUID references...")
+            self._persist_links(existing_links)
+            self._links_need_persist = False
 
-        # 2.5 Detect orphaned tasks (tasks whose counterpart was deleted)
+        self.logger.info("Finding task matches...")
+        # Pass normalized existing_links to matcher
+        links = self.matcher.find_matches(obs_tasks_all, rem_tasks_all, existing_links)
+
+        # 2.5 Detect orphaned tasks (tasks whose counterpart was deleted) *after* matching
         orphaned_rem_uuids, orphaned_obs_uuids = self._detect_orphaned_tasks(
-            existing_links, obs_tasks_all, rem_tasks_all
+            existing_links,
+            obs_tasks_all,
+            rem_tasks_all,
+            active_links=links,
         )
 
         if orphaned_rem_uuids:
-            self.logger.info(f"Found {len(orphaned_rem_uuids)} orphaned Reminders tasks (Obsidian counterparts deleted)")
+            self.logger.info(
+                f"Found {len(orphaned_rem_uuids)} orphaned Reminders tasks (Obsidian counterparts deleted)"
+            )
         if orphaned_obs_uuids:
-            self.logger.info(f"Found {len(orphaned_obs_uuids)} orphaned Obsidian tasks (Reminders counterparts deleted)")
+            self.logger.info(
+                f"Found {len(orphaned_obs_uuids)} orphaned Obsidian tasks (Reminders counterparts deleted)"
+            )
 
         # Handle orphaned tasks based on sync direction
         if self.direction in ("both", "obs-to-rem") and orphaned_rem_uuids:
@@ -143,8 +182,10 @@ class SyncEngine:
                 self.changes_made["rem_deleted"] = self.changes_made.get("rem_deleted", 0) + 1
 
                 # Clean up the link immediately
-                existing_links = [link for link in existing_links
-                                if link.rem_uuid != rem_uuid]
+                existing_links = [
+                    link for link in existing_links if link.rem_uuid != rem_uuid
+                ]
+                links = [link for link in links if link.rem_uuid != rem_uuid]
                 self.changes_made["links_deleted"] = self.changes_made.get("links_deleted", 0) + 1
 
         if self.direction in ("both", "rem-to-obs") and orphaned_obs_uuids:
@@ -157,13 +198,12 @@ class SyncEngine:
                 self.changes_made["obs_deleted"] = self.changes_made.get("obs_deleted", 0) + 1
 
                 # Clean up the link immediately
-                existing_links = [link for link in existing_links
-                                if link.obs_uuid != obs_uuid]
+                existing_links = [
+                    link for link in existing_links if link.obs_uuid != obs_uuid
+                ]
+                links = [link for link in links if link.obs_uuid != obs_uuid]
                 self.changes_made["links_deleted"] = self.changes_made.get("links_deleted", 0) + 1
         
-        self.logger.info("Finding task matches...")
-        # Pass updated existing_links to matcher (after orphaned links removed)
-        links = self.matcher.find_matches(obs_tasks_all, rem_tasks_all, existing_links)
         self.logger.info(f"Found {len(links)} matched pairs")
         
         # 3. Identify unmatched tasks
@@ -318,10 +358,19 @@ class SyncEngine:
         # Create Reminders tasks for unmatched Obsidian tasks
         if self.direction in ("both", "obs-to-rem") and unmatched_obs:
             # Determine target calendar
-            calendar_id = self.default_calendar_id
-            if not calendar_id and list_ids:
-                calendar_id = list_ids[0]
-            
+            calendar_id = None
+
+            # First try vault-specific mapping
+            if hasattr(self.config, 'get_vault_mapping') and self.vault_id:
+                calendar_id = self.config.get_vault_mapping(self.vault_id)
+
+            # Fallback to list_ids or default
+            if not calendar_id:
+                if list_ids and len(list_ids) > 0:
+                    calendar_id = list_ids[0]
+                else:
+                    calendar_id = self.default_calendar_id
+
             if calendar_id:
                 for obs_task in unmatched_obs:
                     self.logger.debug(f"Creating Reminders task for: {obs_task.description}")
@@ -406,30 +455,62 @@ class SyncEngine:
         
         return new_links
     
-    def _detect_orphaned_tasks(self, existing_links: List[SyncLink],
-                               obs_tasks: List[ObsidianTask],
-                               rem_tasks: List[RemindersTask]) -> tuple[Set[str], Set[str]]:
+    def _detect_orphaned_tasks(
+        self,
+        existing_links: List[SyncLink],
+        obs_tasks: List[ObsidianTask],
+        rem_tasks: List[RemindersTask],
+        active_links: Optional[List[SyncLink]] = None,
+    ) -> tuple[Set[str], Set[str]]:
         """Detect tasks that had links but their counterpart was deleted.
+
+        Args:
+            existing_links: Links loaded from storage prior to matching
+            obs_tasks: Current Obsidian task list
+            rem_tasks: Current Reminders task list
+            active_links: Links that are currently considered valid matches after
+                normalization/matching. When provided, entries that already have a
+                live match are ignored to prevent false orphan reports during
+                normalization migrations.
 
         Returns:
             Tuple of (orphaned_rem_uuids, orphaned_obs_uuids)
         """
         obs_uuid_set = {task.uuid for task in obs_tasks}
         rem_uuid_set = {task.uuid for task in rem_tasks}
+        active_obs = {link.obs_uuid for link in active_links} if active_links else set()
+        active_rem = {link.rem_uuid for link in active_links} if active_links else set()
 
-        orphaned_rem_uuids = set()
-        orphaned_obs_uuids = set()
+        orphaned_rem_uuids: Set[str] = set()
+        orphaned_obs_uuids: Set[str] = set()
 
         for link in existing_links:
+            # Skip links that already have an active match after normalization/matching
+            if active_links and (
+                link.obs_uuid in active_obs or link.rem_uuid in active_rem
+            ):
+                continue
+
+            obs_exists = link.obs_uuid in obs_uuid_set
+            rem_exists = link.rem_uuid in rem_uuid_set
+
             # If Obsidian task deleted but Reminders task still exists
-            if link.obs_uuid not in obs_uuid_set and link.rem_uuid in rem_uuid_set:
+            if not obs_exists and rem_exists:
                 orphaned_rem_uuids.add(link.rem_uuid)
-                self.logger.debug(f"Found orphaned Reminders task: {link.rem_uuid} (Obsidian counterpart {link.obs_uuid} was deleted)")
+                self.logger.debug(
+                    "Found orphaned Reminders task: %s (Obsidian counterpart %s was deleted)",
+                    link.rem_uuid,
+                    link.obs_uuid,
+                )
 
             # If Reminders task deleted but Obsidian task still exists
-            elif link.rem_uuid not in rem_uuid_set and link.obs_uuid in obs_uuid_set:
+            elif not rem_exists and obs_exists:
                 orphaned_obs_uuids.add(link.obs_uuid)
-                self.logger.debug(f"Found orphaned Obsidian task: {link.obs_uuid} (Reminders counterpart {link.rem_uuid} was deleted)")
+                self.logger.debug(
+                    "Found orphaned Obsidian task: %s (Reminders counterpart %s was deleted)",
+                    link.obs_uuid,
+                    link.rem_uuid,
+                )
 
         return orphaned_rem_uuids, orphaned_obs_uuids
     
@@ -452,6 +533,159 @@ class SyncEngine:
         except Exception as e:
             self.logger.error(f"Failed to load existing links: {e}")
             return []
+    
+    def _normalize_links(self, links: List[SyncLink], obs_tasks: List[ObsidianTask], rem_tasks: List[RemindersTask] = None) -> List[SyncLink]:
+        """Normalize existing links to fix stale UUID references.
+        
+        When ObsidianTaskManager creates tasks with temporary UUIDs (e.g. 'obs-temp-123')
+        but later list_tasks generates canonical UUIDs like 'obs-{block_id}' or stable
+        hash-based UUIDs for tasks without block IDs, this method fixes the discrepancy
+        by updating the links to use the canonical UUID.
+        
+        Args:
+            links: Existing sync links to normalize
+            obs_tasks: Current Obsidian tasks to check against
+            rem_tasks: Optional Reminders tasks for better matching
+            
+        Returns:
+            List of normalized links with any necessary UUID corrections applied
+        """
+        # Build maps for quick lookups
+        obs_by_uuid = {task.uuid: task for task in obs_tasks}
+        obs_by_blockid = {}
+        for task in obs_tasks:
+            if task.block_id:
+                obs_by_blockid[task.block_id] = task
+        
+        normalized_links = []
+        links_updated = 0
+        
+        for link in links:
+            updated_link = link
+            
+            # Check if this link's obs_uuid needs normalization
+            if link.obs_uuid and link.obs_uuid.startswith('obs-'):
+                stub_suffix = link.obs_uuid[4:]  # Remove 'obs-' prefix
+                
+                # First check if there's a task with this exact UUID (already canonical)
+                if link.obs_uuid in obs_by_uuid:
+                    # UUID is valid as-is
+                    normalized_links.append(link)
+                # Check if the suffix matches a block_id (meaning this is a canonical form)
+                elif stub_suffix in obs_by_blockid:
+                    # This is already in canonical form
+                    normalized_links.append(link)
+                else:
+                    # This might be a stale temporary UUID
+                    # For temporary UUIDs (especially obs-temp-*), try to find the canonical task
+                    found_canonical = False
+                    
+                    # If it looks like a temporary UUID, try to match by looking at all tasks
+                    if 'temp' in link.obs_uuid or len(stub_suffix) in [8, 36]:
+                        # Look for a task that could be the canonical version
+                        # We'll match by checking if there's exactly one unmatched task
+                        # that could correspond to this Reminder
+                        
+                        # Get all links with this reminder UUID
+                        links_for_rem = [l for l in links if l.rem_uuid == link.rem_uuid]
+                        
+                        if len(links_for_rem) == 1:  # Only this link references this reminder
+                            # Look for tasks that aren't already linked
+                            linked_obs_uuids = {l.obs_uuid for l in links if l != link}
+                            unlinked_tasks = [t for t in obs_tasks if t.uuid not in linked_obs_uuids]
+                            
+                            # If there's exactly one unlinked task, it's likely the match
+                            # If there are multiple, we need to be more careful
+                            if len(unlinked_tasks) == 1:
+                                candidate = unlinked_tasks[0]
+                                
+                                # Update the link to use the candidate's UUID
+                                updated_link = SyncLink(
+                                    obs_uuid=candidate.uuid,
+                                    rem_uuid=link.rem_uuid,
+                                    score=link.score,
+                                    last_synced=link.last_synced,
+                                    created_at=link.created_at
+                                )
+                                links_updated += 1
+                                found_canonical = True
+                                self.logger.info(
+                                    f"Normalized legacy link: {link.obs_uuid} -> {candidate.uuid} "
+                                    f"(single unlinked match: {candidate.file_path}:{candidate.line_number})"
+                                )
+                            elif len(unlinked_tasks) > 1 and rem_tasks:
+                                # Multiple unlinked tasks - use matcher to find best match
+                                rem_task = None
+                                for rt in rem_tasks:
+                                    if rt.uuid == link.rem_uuid:
+                                        rem_task = rt
+                                        break
+                                
+                                if rem_task:
+                                    # Use the matcher to find the best match
+                                    best_score = 0.0
+                                    best_candidate = None
+                                    
+                                    for obs_task in unlinked_tasks:
+                                        score = self.matcher._calculate_similarity(obs_task, rem_task)
+                                        if score > best_score and score >= self.matcher.min_score:
+                                            best_score = score
+                                            best_candidate = obs_task
+                                    
+                                    if best_candidate:
+                                        # Update the link to use the best candidate's UUID
+                                        updated_link = SyncLink(
+                                            obs_uuid=best_candidate.uuid,
+                                            rem_uuid=link.rem_uuid,
+                                            score=best_score,
+                                            last_synced=link.last_synced,
+                                            created_at=link.created_at
+                                        )
+                                        links_updated += 1
+                                        found_canonical = True
+                                        self.logger.info(
+                                            f"Normalized legacy link via matcher: {link.obs_uuid} -> {best_candidate.uuid} "
+                                            f"(score: {best_score:.2f}, task: {best_candidate.file_path}:{best_candidate.line_number})"
+                                        )
+                                    else:
+                                        self.logger.debug(
+                                            f"Cannot normalize {link.obs_uuid}: no matches above threshold among {len(unlinked_tasks)} candidates"
+                                        )
+                                else:
+                                    self.logger.debug(
+                                        f"Cannot normalize {link.obs_uuid}: reminder task not found"
+                                    )
+                            elif len(unlinked_tasks) > 1:
+                                # No rem_tasks provided - can't use matcher
+                                self.logger.debug(
+                                    f"Cannot normalize {link.obs_uuid}: {len(unlinked_tasks)} potential matches, no rem_tasks for matching"
+                                )
+                    
+                    if found_canonical:
+                        normalized_links.append(updated_link)
+                    else:
+                        # Can't normalize, keep as-is (might be for deleted task)
+                        normalized_links.append(link)
+            else:
+                # Non-Obsidian UUID or doesn't start with 'obs-', keep as-is
+                normalized_links.append(link)
+        
+        # Remove duplicate links (same obs_uuid and rem_uuid)
+        unique_links = {}
+        for link in normalized_links:
+            key = f"{link.obs_uuid}:{link.rem_uuid}"
+            if key not in unique_links or link.score > unique_links[key].score:
+                # Keep the link with the higher score if duplicates exist
+                unique_links[key] = link
+        
+        final_links = list(unique_links.values())
+        
+        if links_updated > 0:
+            self.logger.info(f"Normalized {links_updated} links with updated UUIDs")
+            # Mark that we need to persist these normalized links
+            self._links_need_persist = True
+        
+        return final_links
     
     def _persist_links(self, links: List[SyncLink]) -> None:
         """Persist sync links to file."""

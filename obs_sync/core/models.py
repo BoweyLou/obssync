@@ -266,6 +266,7 @@ class SyncConfig:
     reminders_lists: List[RemindersList] = field(default_factory=list)
     default_calendar_id: Optional[str] = None
     calendar_ids: List[str] = field(default_factory=list)
+    vault_mappings: List[Dict[str, str]] = field(default_factory=list)
     min_score: float = 0.75
     days_tolerance: int = 1
     include_completed: bool = False
@@ -327,6 +328,56 @@ class SyncConfig:
     def has_reminder_lists(self) -> bool:
         return bool(self.reminders_lists)
 
+    def get_vault_mapping(self, vault_id: str) -> Optional[str]:
+        """Get calendar ID mapped to a specific vault.
+
+        Args:
+            vault_id: The vault ID to look up
+
+        Returns:
+            Calendar ID if mapped, None otherwise
+        """
+        for mapping in self.vault_mappings:
+            if mapping.get("vault_id") == vault_id:
+                return mapping.get("calendar_id")
+        return None
+
+    def set_vault_mapping(self, vault_id: str, calendar_id: str) -> None:
+        """Set or update vault to calendar mapping.
+
+        Args:
+            vault_id: The vault ID to map
+            calendar_id: The calendar ID to map to
+        """
+        # Remove any existing mapping for this vault
+        self.vault_mappings = [
+            m for m in self.vault_mappings
+            if m.get("vault_id") != vault_id
+        ]
+        # Add the new mapping
+        self.vault_mappings.append({
+            "vault_id": vault_id,
+            "calendar_id": calendar_id
+        })
+
+    def get_all_vault_mappings(self) -> List[tuple[Vault, str]]:
+        """Get all vault to calendar mappings as tuples.
+
+        Returns:
+            List of (Vault, calendar_id) tuples for configured mappings
+        """
+        result = []
+        for mapping in self.vault_mappings:
+            vault_id = mapping.get("vault_id")
+            calendar_id = mapping.get("calendar_id")
+            if vault_id and calendar_id:
+                # Find the vault object
+                for vault in self.vaults:
+                    if vault.vault_id == vault_id:
+                        result.append((vault, calendar_id))
+                        break
+        return result
+
     # ------------------------------------------------------------------
     # Persistence helpers
     # ------------------------------------------------------------------
@@ -368,6 +419,9 @@ class SyncConfig:
                 )
             )
 
+        # Parse vault mappings
+        vault_mappings = data.get("vault_mappings", [])
+
         sync_settings = data.get("sync", {})
         min_score = sync_settings.get("min_score", data.get("min_score", 0.75))
         days_tolerance = sync_settings.get(
@@ -386,6 +440,7 @@ class SyncConfig:
             reminders_lists=reminders_lists,
             default_calendar_id=data.get("default_calendar_id"),
             calendar_ids=data.get("calendar_ids", []),
+            vault_mappings=vault_mappings,
             min_score=min_score,
             days_tolerance=days_tolerance,
             include_completed=include_completed,
@@ -446,6 +501,7 @@ class SyncConfig:
             ],
             "default_calendar_id": self.default_calendar_id,
             "calendar_ids": self.calendar_ids,
+            "vault_mappings": self.vault_mappings,
             "sync": {
                 "min_score": self.min_score,
                 "days_tolerance": self.days_tolerance,

@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from obs_sync.core import SyncConfig
-from obs_sync.core.config import load_config, save_config
+from obs_sync.core.config import load_config, save_config, get_default_config_path
 from obs_sync.commands import (
     SetupCommand,
     SyncCommand,
@@ -36,10 +36,13 @@ Examples:
         """
     )
     
+    # Use PathManager-derived default path for help text
+    default_config = get_default_config_path()
+    
     parser.add_argument(
         '--config',
-        help='Path to configuration file',
-        default='~/.config/obs-sync/config.json'
+        help=f'Path to configuration file (default: {default_config})',
+        default=None  # Remove hardcoded default so PathManager fallback works
     )
     
     parser.add_argument(
@@ -56,6 +59,11 @@ Examples:
         '--reconfigure',
         action='store_true',
         help='Reconfigure even if already set up'
+    )
+    setup_parser.add_argument(
+        '--add',
+        action='store_true',
+        help='Add vaults or Reminders lists without re-running full setup'
     )
     
     # Install dependencies command
@@ -140,11 +148,16 @@ Examples:
     # Load configuration
     config = load_config(args.config)
     
+    # Show resolved config path when verbose
+    if args.verbose:
+        actual_config_path = args.config if args.config else get_default_config_path()
+        print(f"Using config: {actual_config_path}")
+    
     # Execute command
     try:
         if args.command == 'setup':
             cmd = SetupCommand(config, verbose=args.verbose)
-            success = cmd.run(reconfigure=args.reconfigure)
+            success = cmd.run(reconfigure=args.reconfigure, add=getattr(args, 'add', False))
             if success:
                 save_config(config, args.config)
             

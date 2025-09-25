@@ -21,23 +21,80 @@ class SyncCommand:
     def run(self, apply_changes: bool = False, direction: str = "both") -> bool:
         """Run the sync command."""
         try:
-            vault_path = self.config.default_vault_path
-            if not vault_path:
-                print("No Obsidian vault configured. Run 'obs-sync setup' first.")
-                return False
+            # Get all vault mappings
+            mappings = self.config.get_all_vault_mappings()
 
-            if not os.path.exists(vault_path):
-                print(f"Configured vault does not exist: {vault_path}")
-                return False
+            if not mappings:
+                # Fallback to legacy behavior if no mappings configured
+                vault_path = self.config.default_vault_path
+                if not vault_path:
+                    print("No Obsidian vault configured. Run 'obs-sync setup' first.")
+                    return False
 
-            list_ids = self.config.reminder_list_ids or None
-            return sync_command(
-                vault_path=vault_path,
-                list_ids=list_ids,
-                dry_run=not apply_changes,
-                direction=direction,
-                config=self.config,
-            )
+                if not os.path.exists(vault_path):
+                    print(f"Configured vault does not exist: {vault_path}")
+                    return False
+
+                list_ids = self.config.reminder_list_ids or None
+                print(f"\n📁 Syncing vault: {os.path.basename(vault_path)}")
+                return sync_command(
+                    vault_path=vault_path,
+                    list_ids=list_ids,
+                    dry_run=not apply_changes,
+                    direction=direction,
+                    config=self.config,
+                )
+
+            # Process each vault mapping
+            all_success = True
+            total_vaults = len(mappings)
+
+            print(f"\n🔄 Syncing {total_vaults} vault(s)...")
+            print("=" * 50)
+
+            for idx, (vault, calendar_id) in enumerate(mappings, 1):
+                vault_path = vault.path
+
+                if not os.path.exists(vault_path):
+                    print(f"\n⚠️  Vault {idx}/{total_vaults}: {vault.name}")
+                    print(f"   Vault path does not exist: {vault_path}")
+                    all_success = False
+                    continue
+
+                # Find the list name for display
+                list_name = "Unknown"
+                for lst in self.config.reminders_lists:
+                    if lst.identifier == calendar_id:
+                        list_name = lst.name
+                        break
+
+                print(f"\n📁 Vault {idx}/{total_vaults}: {vault.name}")
+                print(f"   → Syncing with list: {list_name}")
+
+                # Run sync for this vault-list pair
+                success = sync_command(
+                    vault_path=vault_path,
+                    list_ids=[calendar_id],  # Single list for this vault
+                    dry_run=not apply_changes,
+                    direction=direction,
+                    config=self.config,
+                )
+
+                if not success:
+                    all_success = False
+                    print(f"   ❌ Sync failed for vault: {vault.name}")
+
+                if idx < total_vaults:
+                    print("-" * 50)
+
+            print("\n" + "=" * 50)
+            if all_success:
+                print("✅ All vaults synced successfully!")
+            else:
+                print("⚠️  Some vaults had sync errors. Check the output above.")
+
+            return all_success
+
         except Exception as exc:  # pragma: no cover - defensive
             self.logger.error("Sync command failed: %s", exc)
             if self.verbose:
@@ -89,7 +146,9 @@ def sync_command(
             changes["obs_updated"],
             changes["rem_updated"],
             changes["obs_created"],
-            changes["rem_created"]
+            changes["rem_created"],
+            changes.get("obs_deleted", 0),
+            changes.get("rem_deleted", 0),
         ])
         
         if has_changes:
@@ -102,8 +161,14 @@ def sync_command(
                 print(f"  Obsidian creations: {changes['obs_created']}")
             if changes["rem_created"]:
                 print(f"  Reminders creations: {changes['rem_created']}")
+            if changes.get("obs_deleted", 0):
+                print(f"  Obsidian deletions: {changes['obs_deleted']}")
+            if changes.get("rem_deleted", 0):
+                print(f"  Reminders deletions: {changes['rem_deleted']}")
             if changes["links_created"]:
                 print(f"  New sync links: {changes['links_created']}")
+            if changes.get("links_deleted", 0):
+                print(f"  Removed sync links: {changes['links_deleted']}")
             if changes["conflicts_resolved"]:
                 print(f"  Conflicts resolved: {changes['conflicts_resolved']}")
         else:

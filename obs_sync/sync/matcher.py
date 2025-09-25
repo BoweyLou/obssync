@@ -72,6 +72,19 @@ class TaskMatcher:
         # Title similarity (70% weight)
         obs_tokens = normalize_text_for_similarity(obs_task.description)
         rem_tokens = normalize_text_for_similarity(rem_task.title)
+        
+        # Special case: If both normalize to empty but raw strings match ignoring case/whitespace
+        # This handles cases like URL-only tasks or single "#" tasks
+        if not obs_tokens and not rem_tokens:
+            # Compare raw strings, ignoring case and whitespace
+            obs_raw = (obs_task.description or "").strip().lower()
+            rem_raw = (rem_task.title or "").strip().lower()
+            # If both are empty/whitespace only, or both are identical
+            if obs_raw == rem_raw:
+                # Perfect match for identical "empty" tasks
+                # This includes both being empty string after strip
+                return 1.0
+        
         title_sim = dice_similarity(obs_tokens, rem_tokens)
         
         # Due date similarity (25% weight)

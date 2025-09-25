@@ -4,6 +4,7 @@ Text normalization and similarity utilities.
 
 import re
 from typing import List, Optional
+from urllib.parse import urlparse
 
 
 def normalize_text(text: Optional[str]) -> List[str]:
@@ -11,6 +12,7 @@ def normalize_text(text: Optional[str]) -> List[str]:
     Normalize text for similarity comparison.
     
     Converts to lowercase, removes punctuation, splits into tokens.
+    Preserves URL structure as meaningful tokens.
     
     Args:
         text: Text to normalize
@@ -24,8 +26,16 @@ def normalize_text(text: Optional[str]) -> List[str]:
     # Convert to lowercase
     text = text.lower()
     
-    # Remove URLs
-    text = re.sub(r'https?://\S+', '', text)
+    # Process URLs to extract meaningful tokens
+    # Find all URLs and replace them with tokens
+    url_pattern = re.compile(r'(https?://[^\s]+)')
+    urls = url_pattern.findall(text)
+    
+    # Replace URLs with extracted tokens
+    for url in urls:
+        url_tokens = _url_to_tokens(url)
+        # Join tokens with space to maintain text flow
+        text = text.replace(url, ' '.join(url_tokens))
     
     # Remove markdown formatting
     text = re.sub(r'[*_~`#]', '', text)
@@ -35,6 +45,48 @@ def normalize_text(text: Optional[str]) -> List[str]:
     
     # Split into tokens and remove empty ones
     tokens = [t for t in text.split() if t]
+    
+    return tokens
+
+
+def _url_to_tokens(url: str) -> List[str]:
+    """
+    Extract meaningful tokens from a URL.
+    
+    Drops scheme and query parameters, keeps host and path segments.
+    
+    Args:
+        url: URL string to tokenize
+    
+    Returns:
+        List of URL tokens
+    """
+    tokens = []
+    
+    try:
+        parsed = urlparse(url)
+        
+        # Extract host parts (e.g., "example.com" -> ["example", "com"])
+        if parsed.netloc:
+            # Remove port if present
+            host = parsed.netloc.split(':')[0]
+            # Split by dots and add as tokens
+            host_parts = host.split('.')
+            tokens.extend(host_parts)
+        
+        # Extract path segments (e.g., "/path/to/item" -> ["path", "to", "item"])
+        if parsed.path:
+            # Remove leading/trailing slashes and split
+            path_parts = [p for p in parsed.path.strip('/').split('/') if p]
+            tokens.extend(path_parts)
+            
+        # Note: We intentionally skip query parameters and fragments
+        # to allow matching of URLs that differ only in these aspects
+        
+    except Exception:
+        # If URL parsing fails, just return the original URL as a single token
+        # Better to have some token than none
+        tokens = [url.replace('://', '_').replace('/', '_')]
     
     return tokens
 

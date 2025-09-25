@@ -46,6 +46,10 @@ obs-sync install-deps --auto
 ```bash
 obs-sync setup
 ```
+Add more vaults or Reminders lists later without redoing everything:
+```bash
+obs-sync setup --add
+```
 
 3. Run your first sync:
 ```bash
@@ -55,7 +59,7 @@ obs-sync sync --apply # Apply changes
 
 ## Commands
 
-- `obs-sync setup` - Interactive configuration
+- `obs-sync setup` - Interactive configuration (`--add` to append, `--reconfigure` to restart)
 - `obs-sync install-deps` - Install optional dependencies
 - `obs-sync sync` - Synchronize tasks
 - `obs-sync calendar` - Sync calendar events to daily notes
