@@ -169,6 +169,7 @@ class RemindersTask:
     due_date: Optional[date] = None
     priority: Optional[Priority] = None
     notes: Optional[str] = None
+    tags: List[str] = field(default_factory=list)  # Added tags field
     created_at: Optional[str] = None
     modified_at: Optional[str] = None
 
@@ -187,6 +188,7 @@ class RemindersTask:
             "due": _date_to_iso(self.due_date),
             "priority": self.priority.value if self.priority else None,
             "notes": self.notes,
+            "tags": self.tags,  # Added tags to serialization
             "created_at": self.created_at,
             "updated_at": self.modified_at,
         }
@@ -217,6 +219,7 @@ class RemindersTask:
             due_date=_iso_to_date(data.get("due")),
             priority=priority,
             notes=data.get("notes"),
+            tags=data.get("tags", []),  # Added tags deserialization
             created_at=data.get("created_at"),
             modified_at=data.get("updated_at"),
         )
@@ -274,6 +277,9 @@ class SyncConfig:
     obsidian_index_path: Optional[str] = None
     reminders_index_path: Optional[str] = None
     links_path: Optional[str] = None
+    # Deduplication settings
+    enable_deduplication: bool = True
+    dedup_auto_apply: bool = False
 
     def __post_init__(self) -> None:
         # Get the path manager
