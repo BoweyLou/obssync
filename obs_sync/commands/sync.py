@@ -44,17 +44,20 @@ class SyncCommand:
 
                 list_ids = self.config.reminder_list_ids or None
                 print(f"\n📁 Syncing vault: {os.path.basename(vault_path)}")
-                return sync_command(
+                vault_result = sync_command(
                     vault_path=vault_path,
                     list_ids=list_ids,
                     dry_run=not apply_changes,
                     direction=direction,
                     config=self.config,
+                    show_summary=True,  # Legacy single vault keeps full summary
                 )
+                return vault_result['success']
 
             # Process each vault mapping
             all_success = True
             total_vaults = len(mappings)
+            vault_results = []
 
             print(f"\n🔄 Syncing {total_vaults} vault(s)...")
             print("=" * 50)
@@ -66,39 +69,65 @@ class SyncCommand:
                     print(f"\n⚠️  Vault {idx}/{total_vaults}: {vault.name}")
                     print(f"   Vault path does not exist: {vault_path}")
                     all_success = False
+                    
+                    # Add failed vault to results for summary
+                    vault_results.append({
+                        'success': False,
+                        'vault_path': vault_path,
+                        'vault_name': vault.name,
+                        'error': f'Vault path does not exist: {vault_path}'
+                    })
                     continue
 
-                # Find the list name for display
-                list_name = "Unknown"
-                for lst in self.config.reminders_lists:
-                    if lst.identifier == calendar_id:
-                        list_name = lst.name
-                        break
+                list_ids = self._collect_list_ids_for_vault(vault, calendar_id)
 
                 print(f"\n📁 Vault {idx}/{total_vaults}: {vault.name}")
-                print(f"   → Syncing with list: {list_name}")
 
-                # Run sync for this vault-list pair
-                success = sync_command(
+                if calendar_id:
+                    list_name = self._get_list_name(calendar_id)
+                    print(f"   → Syncing with default list: {list_name}")
+                else:
+                    print("   → No default Reminders list configured for this vault")
+
+                tag_routes = self.config.get_tag_routes_for_vault(vault.vault_id)
+                if tag_routes:
+                    print("   Tag routes:")
+                    for route in tag_routes:
+                        route_list = self._get_list_name(route.get("calendar_id"))
+                        print(f"     • {route['tag']} → {route_list}")
+
+                print(f"   🔄 Running sync...")
+                
+                # Run sync for this vault with all relevant lists, suppress individual summary
+                vault_result = sync_command(
                     vault_path=vault_path,
-                    list_ids=[calendar_id],  # Single list for this vault
+                    list_ids=list_ids or None,
                     dry_run=not apply_changes,
                     direction=direction,
                     config=self.config,
+                    show_summary=False,  # Suppress individual vault summaries
                 )
 
-                if not success:
+                vault_results.append(vault_result)
+
+                if not vault_result['success']:
                     all_success = False
-                    print(f"   ❌ Sync failed for vault: {vault.name}")
+                    print(f"   ❌ Sync failed: {vault_result.get('error', 'Unknown error')}")
+                else:
+                    print(f"   ✅ Sync completed")
 
                 if idx < total_vaults:
                     print("-" * 50)
 
             print("\n" + "=" * 50)
+            
+            # Show consolidated summary
+            self._show_consolidated_summary(vault_results, apply_changes)
+            
             if all_success:
-                print("✅ All vaults synced successfully!")
+                print("\n✅ All vaults synced successfully!")
             else:
-                print("⚠️  Some vaults had sync errors. Check the output above.")
+                print("\n⚠️  Some vaults had sync errors. Check the output above.")
 
             return all_success
 
@@ -106,9 +135,165 @@ class SyncCommand:
             self.logger.error("Sync command failed: %s", exc)
             if self.verbose:
                 import traceback
-
                 traceback.print_exc()
             return False
+
+    def _collect_list_ids_for_vault(
+        self,
+        vault,
+        default_calendar_id: Optional[str],
+    ) -> List[str]:
+        list_ids: List[str] = []
+        if default_calendar_id:
+            list_ids.append(default_calendar_id)
+
+        for route in self.config.get_tag_routes_for_vault(vault.vault_id):
+            calendar_id = route.get("calendar_id")
+            if calendar_id and calendar_id not in list_ids:
+                list_ids.append(calendar_id)
+
+        return list_ids
+
+    def _get_list_name(self, identifier: Optional[str]) -> str:
+        if not identifier:
+            return "Unknown"
+        for lst in self.config.reminders_lists:
+            if lst.identifier == identifier:
+                return lst.name
+        return identifier
+    
+    def _show_consolidated_summary(self, vault_results: List[dict], apply_changes: bool) -> None:
+        """Show consolidated summary across all vaults."""
+        print("\n🔄 Sync Summary")
+        
+        # Aggregate totals
+        total_obs_tasks = 0
+        total_rem_tasks = 0
+        total_links = 0
+        total_vaults_success = 0
+        total_vaults_failed = 0
+        
+        # Aggregate changes
+        aggregated_changes = {
+            "obs_updated": 0,
+            "rem_updated": 0,
+            "obs_created": 0,
+            "rem_created": 0,
+            "obs_deleted": 0,
+            "rem_deleted": 0,
+            "links_created": 0,
+            "links_deleted": 0,
+            "conflicts_resolved": 0,
+        }
+        
+        # Aggregate deduplication stats
+        total_dedup_obs = 0
+        total_dedup_rem = 0
+        
+        # Collect tag routing info across all vaults
+        all_tag_summaries = {}
+        
+        for vault_result in vault_results:
+            if vault_result.get('success', False):
+                total_vaults_success += 1
+                results = vault_result.get('results', {})
+                dedup_stats = vault_result.get('dedup_stats', {})
+                
+                # Ensure dedup_stats is a dict, not a string or None
+                if not isinstance(dedup_stats, dict):
+                    dedup_stats = {'obs_deleted': 0, 'rem_deleted': 0}
+                
+                # Aggregate basic counts
+                total_obs_tasks += results.get('obs_tasks', 0)
+                total_rem_tasks += results.get('rem_tasks', 0)
+                total_links += results.get('links', 0)
+                
+                # Aggregate changes
+                changes = results.get('changes', {})
+                for key in aggregated_changes:
+                    aggregated_changes[key] += changes.get(key, 0)
+                
+                # Aggregate deduplication
+                total_dedup_obs += dedup_stats.get('obs_deleted', 0)
+                total_dedup_rem += dedup_stats.get('rem_deleted', 0)
+                
+                # Collect tag routing summaries
+                tag_summary = results.get('tag_summary', {})
+                if tag_summary and isinstance(tag_summary, dict):
+                    for tag, stats in tag_summary.items():
+                        if isinstance(stats, dict):
+                            if tag not in all_tag_summaries:
+                                all_tag_summaries[tag] = {}
+                            for list_name, count in stats.items():
+                                if isinstance(count, (int, float)):
+                                    if list_name not in all_tag_summaries[tag]:
+                                        all_tag_summaries[tag][list_name] = 0
+                                    all_tag_summaries[tag][list_name] += count
+            else:
+                total_vaults_failed += 1
+        
+        # Show basic stats
+        print(f"\nOverall Statistics:")
+        print(f"  Total Obsidian tasks: {total_obs_tasks}")
+        print(f"  Total Reminders tasks: {total_rem_tasks}")
+        print(f"  Total matched pairs: {total_links}")
+        print(f"  Vaults processed: {total_vaults_success + total_vaults_failed} ({total_vaults_success} successful, {total_vaults_failed} failed)")
+        
+        # Show tag routing summary if available
+        if all_tag_summaries:
+            print("\n📊 Tag Routing Summary (All Vaults):")
+            for tag, stats in all_tag_summaries.items():
+                print(f"  {tag}:")
+                for list_name, count in stats.items():
+                    print(f"    → {list_name}: {count} task(s)")
+        
+        # Show changes summary
+        has_sync_changes = any([
+            aggregated_changes["obs_updated"],
+            aggregated_changes["rem_updated"],
+            aggregated_changes["obs_created"],
+            aggregated_changes["rem_created"],
+            aggregated_changes.get("obs_deleted", 0),
+            aggregated_changes.get("rem_deleted", 0),
+        ])
+        
+        has_dedup_changes = total_dedup_obs > 0 or total_dedup_rem > 0
+        
+        if has_sync_changes or has_dedup_changes:
+            dry_run = not apply_changes
+            print(f"\nTotal Changes {'to make' if dry_run else 'made'}:")
+            
+            if has_sync_changes:
+                if aggregated_changes["obs_updated"]:
+                    print(f"  Obsidian updates: {aggregated_changes['obs_updated']}")
+                if aggregated_changes["rem_updated"]:
+                    print(f"  Reminders updates: {aggregated_changes['rem_updated']}")
+                if aggregated_changes["obs_created"]:
+                    print(f"  Obsidian creations: {aggregated_changes['obs_created']}")
+                if aggregated_changes["rem_created"]:
+                    print(f"  Reminders creations: {aggregated_changes['rem_created']}")
+                if aggregated_changes.get("obs_deleted", 0):
+                    print(f"  Obsidian deletions: {aggregated_changes['obs_deleted']}")
+                if aggregated_changes.get("rem_deleted", 0):
+                    print(f"  Reminders deletions: {aggregated_changes['rem_deleted']}")
+                if aggregated_changes["links_created"]:
+                    print(f"  New sync links: {aggregated_changes['links_created']}")
+                if aggregated_changes.get("links_deleted", 0):
+                    print(f"  Removed sync links: {aggregated_changes['links_deleted']}")
+                if aggregated_changes["conflicts_resolved"]:
+                    print(f"  Conflicts resolved: {aggregated_changes['conflicts_resolved']}")
+            
+            if has_dedup_changes:
+                print(f"\nDeduplication {'to perform' if dry_run else 'complete'}:")
+                if total_dedup_obs:
+                    print(f"  Obsidian deletions: {total_dedup_obs}")
+                if total_dedup_rem:
+                    print(f"  Reminders deletions: {total_dedup_rem}")
+            
+            if dry_run:
+                print("\n💡 This was a dry run. Use --apply to make changes.")
+        else:
+            print("\nNo changes needed - everything is in sync across all vaults!")
 
 
 def sync_command(
@@ -117,13 +302,20 @@ def sync_command(
     dry_run: bool = True,
     direction: str = "both",
     config: Optional[SyncConfig] = None,
-) -> bool:
+    show_summary: bool = True,
+) -> dict:
     """Execute sync between Obsidian and Reminders."""
     logger = logging.getLogger(__name__)
 
     if not os.path.exists(vault_path):
-        print(f"Vault not found at {vault_path}")
-        return False
+        if show_summary:
+            print(f"Vault not found at {vault_path}")
+        return {
+            'success': False,
+            'vault_path': vault_path,
+            'vault_name': os.path.basename(vault_path),
+            'error': f"Vault not found at {vault_path}"
+        }
 
     # Use provided config or defaults
     if not config:
@@ -138,16 +330,25 @@ def sync_command(
         "links_path": config.links_path,
     }
 
-    engine = SyncEngine(engine_config, logger, direction=direction)
+    engine = SyncEngine(engine_config, logger, direction=direction, sync_config=config)
 
     try:
         # Run initial sync to get tasks and perform regular sync operations
         results = engine.sync(vault_path, list_ids, dry_run)
 
-        print(f"\nSync {'Preview' if dry_run else 'Complete'}:")
-        print(f"  Obsidian tasks: {results['obs_tasks']}")
-        print(f"  Reminders tasks: {results['rem_tasks']}")
-        print(f"  Matched pairs: {results['links']}")
+        if show_summary:
+            print(f"\nSync {'Preview' if dry_run else 'Complete'}:")
+            print(f"  Obsidian tasks: {results['obs_tasks']}")
+            print(f"  Reminders tasks: {results['rem_tasks']}")
+            print(f"  Matched pairs: {results['links']}")
+            
+            # Display tag routing summary if available
+            if 'tag_summary' in results and results['tag_summary']:
+                print("\n📊 Tag Routing Summary:")
+                for tag, stats in results['tag_summary'].items():
+                    print(f"  {tag}:")
+                    for list_name, count in stats.items():
+                        print(f"    → {list_name}: {count} task(s)")
 
         changes = results["changes"]
         has_changes = any([
@@ -159,28 +360,29 @@ def sync_command(
             changes.get("rem_deleted", 0),
         ])
         
-        if has_changes:
-            print(f"\nChanges {'to make' if dry_run else 'made'}:")
-            if changes["obs_updated"]:
-                print(f"  Obsidian updates: {changes['obs_updated']}")
-            if changes["rem_updated"]:
-                print(f"  Reminders updates: {changes['rem_updated']}")
-            if changes["obs_created"]:
-                print(f"  Obsidian creations: {changes['obs_created']}")
-            if changes["rem_created"]:
-                print(f"  Reminders creations: {changes['rem_created']}")
-            if changes.get("obs_deleted", 0):
-                print(f"  Obsidian deletions: {changes['obs_deleted']}")
-            if changes.get("rem_deleted", 0):
-                print(f"  Reminders deletions: {changes['rem_deleted']}")
-            if changes["links_created"]:
-                print(f"  New sync links: {changes['links_created']}")
-            if changes.get("links_deleted", 0):
-                print(f"  Removed sync links: {changes['links_deleted']}")
-            if changes["conflicts_resolved"]:
-                print(f"  Conflicts resolved: {changes['conflicts_resolved']}")
-        else:
-            print("\nNo changes needed - everything is in sync!")
+        if show_summary:
+            if has_changes:
+                print(f"\nChanges {'to make' if dry_run else 'made'}:")
+                if changes["obs_updated"]:
+                    print(f"  Obsidian updates: {changes['obs_updated']}")
+                if changes["rem_updated"]:
+                    print(f"  Reminders updates: {changes['rem_updated']}")
+                if changes["obs_created"]:
+                    print(f"  Obsidian creations: {changes['obs_created']}")
+                if changes["rem_created"]:
+                    print(f"  Reminders creations: {changes['rem_created']}")
+                if changes.get("obs_deleted", 0):
+                    print(f"  Obsidian deletions: {changes['obs_deleted']}")
+                if changes.get("rem_deleted", 0):
+                    print(f"  Reminders deletions: {changes['rem_deleted']}")
+                if changes["links_created"]:
+                    print(f"  New sync links: {changes['links_created']}")
+                if changes.get("links_deleted", 0):
+                    print(f"  Removed sync links: {changes['links_deleted']}")
+                if changes["conflicts_resolved"]:
+                    print(f"  Conflicts resolved: {changes['conflicts_resolved']}")
+            else:
+                print("\nNo changes needed - everything is in sync!")
 
         # Run deduplication analysis if enabled
         dedup_stats = {"obs_deleted": 0, "rem_deleted": 0}
@@ -190,7 +392,8 @@ def sync_command(
                 list_ids=list_ids,
                 dry_run=dry_run,
                 config=config,
-                logger=logger
+                logger=logger,
+                show_summary=show_summary
             )
             
             # Add deduplication stats to changes
@@ -198,22 +401,36 @@ def sync_command(
                 changes.update(dedup_stats)
                 
         # Show deduplication summary if any deletions occurred
-        if dedup_stats["obs_deleted"] or dedup_stats["rem_deleted"]:
+        if show_summary and (dedup_stats["obs_deleted"] or dedup_stats["rem_deleted"]):
             print(f"\nDeduplication {'to perform' if dry_run else 'complete'}:")
             if dedup_stats["obs_deleted"]:
                 print(f"  Obsidian deletions: {dedup_stats['obs_deleted']}")
             if dedup_stats["rem_deleted"]:
                 print(f"  Reminders deletions: {dedup_stats['rem_deleted']}")
 
-        if dry_run:
+        if show_summary and dry_run:
             print("\nThis was a dry run. Use --apply to make changes.")
 
-        return True
+        # Return comprehensive results
+        return {
+            'success': True,
+            'vault_path': vault_path,
+            'vault_name': os.path.basename(vault_path),
+            'results': results,
+            'dedup_stats': dedup_stats,
+            'has_changes': has_changes or dedup_stats["obs_deleted"] or dedup_stats["rem_deleted"]
+        }
 
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("Sync failed: %s", exc)
-        print(f"Error: Sync failed - {exc}")
-        return False
+        if show_summary:
+            print(f"Error: Sync failed - {exc}")
+        return {
+            'success': False,
+            'vault_path': vault_path,
+            'vault_name': os.path.basename(vault_path),
+            'error': str(exc)
+        }
 
 
 def _run_deduplication(
@@ -222,6 +439,7 @@ def _run_deduplication(
     dry_run: bool = True,
     config: Optional[SyncConfig] = None,
     logger: Optional[logging.Logger] = None,
+    show_summary: bool = True,
 ) -> dict:
     """
     Run deduplication analysis and optionally apply deletions.
@@ -257,7 +475,7 @@ def _run_deduplication(
         
         # Load existing sync links to exclude already-synced task pairs
         from ..sync.engine import SyncEngine
-        temp_engine = SyncEngine({"links_path": config.links_path}, logger)
+        temp_engine = SyncEngine({"links_path": config.links_path}, logger, sync_config=config)
         existing_links = temp_engine._load_existing_links()
         
         # Analyze for duplicates, excluding already-synced pairs
@@ -270,22 +488,25 @@ def _run_deduplication(
         duplicate_clusters = dedup_results.get_duplicate_clusters()
         
         # Show summary for dry run
-        print(f"\n🔍 Deduplication Analysis:")
-        print(f"  Found {dedup_results.duplicate_clusters} duplicate cluster(s)")
-        print(f"  Affecting {dedup_results.duplicate_tasks} task(s)")
+        if show_summary:
+            print(f"\n🔍 Deduplication Analysis:")
+            print(f"  Found {dedup_results.duplicate_clusters} duplicate cluster(s)")
+            print(f"  Affecting {dedup_results.duplicate_tasks} task(s)")
         
         if dry_run:
             # In dry run, just report what would be done
             total_would_delete = sum(
                 cluster.total_count - 1 for cluster in duplicate_clusters
             )
-            print(f"  Would interactively resolve {total_would_delete} duplicate(s)")
+            if show_summary:
+                print(f"  Would interactively resolve {total_would_delete} duplicate(s)")
             return {"obs_deleted": 0, "rem_deleted": 0}
         
         # For apply mode, check if user wants to run deduplication
         if not config.dedup_auto_apply:
             if not confirm_deduplication():
-                print("Deduplication skipped.")
+                if show_summary:
+                    print("Deduplication skipped.")
                 return {"obs_deleted": 0, "rem_deleted": 0}
         
         # Create task maps for linked counterpart display

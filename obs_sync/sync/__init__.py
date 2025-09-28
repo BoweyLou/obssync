@@ -3,5 +3,6 @@
 from .engine import SyncEngine
 from .matcher import TaskMatcher
 from .resolver import ConflictResolver
+from .deduplicator import TaskDeduplicator, DuplicateCluster, DeduplicationResults
 
-__all__ = ['SyncEngine', 'TaskMatcher', 'ConflictResolver']
+__all__ = ['SyncEngine', 'TaskMatcher', 'ConflictResolver', 'TaskDeduplicator', 'DuplicateCluster', 'DeduplicationResults']

@@ -1,16 +1,17 @@
 """Main sync engine orchestrating the synchronization process."""
 
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Set, Any, Tuple
 from datetime import datetime, timezone
 import uuid
 import json
 import os
-from ..core.models import ObsidianTask, RemindersTask, SyncLink, TaskStatus
+from ..core.models import ObsidianTask, RemindersTask, SyncLink, TaskStatus, SyncConfig
 from ..core.paths import get_path_manager
 from ..obsidian.tasks import ObsidianTaskManager
 from ..reminders.tasks import RemindersTaskManager
 from .matcher import TaskMatcher
 from .resolver import ConflictResolver
+from ..utils.tags import merge_tags
 import logging
 
 
@@ -22,8 +23,10 @@ class SyncEngine:
         config: Dict,
         logger: Optional[logging.Logger] = None,
         direction: str = "both",
+        sync_config: Optional[SyncConfig] = None,
     ):
         self.config = config
+        self.sync_config = sync_config
         self.direction = direction
         self.logger = logger or logging.getLogger(__name__)
 
@@ -58,7 +61,9 @@ class SyncEngine:
         
         # Store vault path and config for task creation
         self.vault_path = None
-        self.vault_id = None  # Add vault_id tracking
+        self.vault_id = None
+        self.vault_name = None
+        self.vault_default_calendar = None
         self.inbox_path = config.get("obsidian_inbox_path", "AppleRemindersInbox.md")
         self.default_calendar_id = config.get("default_calendar_id")
         
@@ -69,6 +74,46 @@ class SyncEngine:
         
         # Flag to track when links need persisting due to normalization
         self._links_need_persist = False
+
+    def _resolve_vault_for_path(self, vault_path: str) -> Optional[Any]:
+        """Resolve vault configuration for a given path with improved normalization.
+
+        Args:
+            vault_path: Path to the vault
+
+        Returns:
+            Vault object if found, None otherwise
+        """
+        if not self.sync_config or not vault_path:
+            return None
+
+        # Normalize the input path
+        normalized_input = os.path.normpath(os.path.abspath(os.path.expanduser(vault_path)))
+
+        for vault in getattr(self.sync_config, "vaults", []):
+            if not vault or not hasattr(vault, 'path'):
+                continue
+
+            try:
+                # Normalize the vault path for comparison
+                vault_normalized = os.path.normpath(os.path.abspath(os.path.expanduser(vault.path)))
+
+                # Compare normalized paths
+                if vault_normalized == normalized_input:
+                    return vault
+
+                # Also try comparing just the resolved real paths (handles symlinks)
+                try:
+                    if os.path.realpath(vault_normalized) == os.path.realpath(normalized_input):
+                        return vault
+                except OSError:
+                    pass
+
+            except (AttributeError, TypeError, OSError) as e:
+                self.logger.debug(f"Error comparing vault path {vault.path}: {e}")
+                continue
+
+        return None
 
     def sync(
         self,
@@ -98,21 +143,28 @@ class SyncEngine:
         
         # Store vault path for creation operations
         self.vault_path = vault_path
-        self.vault_id = os.path.basename(vault_path)  # Simple vault ID from path
+        self.vault_id = None
+        self.vault_name = os.path.basename(vault_path)
+        self.vault_default_calendar = None
 
-        # If we have a config object with mappings, try to get the specific calendar_id
-        if hasattr(self.config, 'get_vault_mapping'):
-            # First try to find the vault by path to get its proper vault_id
-            vault_specific_calendar = None
-            for vault in getattr(self.config, 'vaults', []):
-                if vault.path == vault_path:
-                    vault_specific_calendar = self.config.get_vault_mapping(vault.vault_id)
-                    self.vault_id = vault.vault_id
-                    break
+        if self.sync_config:
+            resolved_vault = self._resolve_vault_for_path(vault_path)
 
-            # Use vault-specific calendar if found, otherwise use provided list_ids
-            if vault_specific_calendar and not list_ids:
-                list_ids = [vault_specific_calendar]
+            if resolved_vault:
+                self.vault_id = resolved_vault.vault_id
+                self.vault_name = resolved_vault.name
+                self.vault_default_calendar = self.sync_config.get_vault_mapping(self.vault_id)
+                self.logger.debug(f"Resolved vault: {self.vault_name} (ID: {self.vault_id})")
+            else:
+                # Fallback: use basename as vault_id
+                self.vault_id = os.path.basename(vault_path)
+                self.logger.warning(f"Could not resolve vault configuration for {vault_path}, using basename: {self.vault_id}")
+
+        if not self.vault_id:
+            self.vault_id = os.path.basename(vault_path)
+
+        if not list_ids and self.vault_default_calendar:
+            list_ids = [self.vault_default_calendar]
 
         # 1. Collect tasks from both systems
         # Always include completed tasks for matching to detect status changes
@@ -137,9 +189,17 @@ class SyncEngine:
         if not user_include_completed:
             self.logger.info("Note: Completed tasks included for matching but excluded from counts")
         
+        # Track current vault task UUIDs for persistence and tagging
+        current_obs_uuids = {task.uuid for task in obs_tasks_all}
+
         # 2. Load existing links and find matches
         self.logger.info("Loading existing links...")
         existing_links = self._load_existing_links()
+
+        # Attach vault identifiers to legacy links belonging to this vault
+        for link in existing_links:
+            if not getattr(link, "vault_id", None) and link.obs_uuid in current_obs_uuids:
+                link.vault_id = self.vault_id
         
         # 2.1 Normalize existing links to fix stale UUID references
         existing_links = self._normalize_links(existing_links, obs_tasks_all, rem_tasks_all)
@@ -147,12 +207,17 @@ class SyncEngine:
         # Persist normalized links if any were updated (even in dry-run to fix data)
         if hasattr(self, '_links_need_persist') and self._links_need_persist:
             self.logger.info("Persisting normalized links to fix stale UUID references...")
-            self._persist_links(existing_links)
+            self._persist_links(existing_links, current_obs_uuids=current_obs_uuids)
             self._links_need_persist = False
 
         self.logger.info("Finding task matches...")
         # Pass normalized existing_links to matcher
         links = self.matcher.find_matches(obs_tasks_all, rem_tasks_all, existing_links)
+
+        # Ensure all links are tagged with the current vault identifier
+        for link in links:
+            if not getattr(link, "vault_id", None):
+                link.vault_id = self.vault_id
 
         # 2.5 Detect orphaned tasks (tasks whose counterpart was deleted) *after* matching
         orphaned_rem_uuids, orphaned_obs_uuids = self._detect_orphaned_tasks(
@@ -226,9 +291,35 @@ class SyncEngine:
         self.logger.info(f"Found {len(unmatched_rem_all)} total unmatched Reminders tasks ({len(unmatched_rem)} active)")
         
         # 4. Create counterpart tasks for unmatched items
-        new_links = self._create_counterparts(unmatched_obs, unmatched_rem, list_ids, dry_run)
+        new_links, created_obs_tasks, created_rem_tasks = self._create_counterparts(
+            unmatched_obs,
+            unmatched_rem,
+            list_ids,
+            dry_run,
+        )
         links.extend(new_links)
-        
+
+        if not dry_run:
+            if created_obs_tasks:
+                obs_tasks_all.extend(created_obs_tasks)
+                current_obs_uuids.update(
+                    task.uuid for task in created_obs_tasks if getattr(task, "uuid", None)
+                )
+                if user_include_completed:
+                    obs_tasks.extend(created_obs_tasks)
+                else:
+                    obs_tasks.extend(
+                        [t for t in created_obs_tasks if t.status != TaskStatus.DONE]
+                    )
+            if created_rem_tasks:
+                rem_tasks_all.extend(created_rem_tasks)
+                if user_include_completed:
+                    rem_tasks.extend(created_rem_tasks)
+                else:
+                    rem_tasks.extend(
+                        [t for t in created_rem_tasks if t.status != TaskStatus.DONE]
+                    )
+
         # 5. Process each link
         for link in links:
             obs_task = self._find_task(obs_tasks_all, link.obs_uuid)
@@ -257,8 +348,11 @@ class SyncEngine:
                     self.logger.debug(f"Removing stale link: {link.obs_uuid} <-> {link.rem_uuid}")
 
             if cleaned_links:
-                self._persist_links(cleaned_links)
+                self._persist_links(cleaned_links, current_obs_uuids=current_obs_uuids)
 
+        # Collect tag routing summary
+        tag_summary = self._collect_tag_routing_summary(obs_tasks, rem_tasks, links)
+        
         # Return results
         return {
             'success': True,
@@ -266,6 +360,7 @@ class SyncEngine:
             'rem_tasks': len(rem_tasks),
             'links': len(links),
             'changes': self.changes_made,
+            'tag_summary': tag_summary,
             'dry_run': dry_run
         }
     
@@ -344,81 +439,268 @@ class SyncEngine:
                 self.obs_manager.update_task(obs_task, {"priority": rem_task.priority})
             self.changes_made["obs_updated"] += 1
             change_applied = True
+        
+        # Tags sync
+        if "tags_winner" in conflicts:
+            if conflicts["tags_winner"] == "obs" and allow_rem_updates:
+                if not dry_run:
+                    self.rem_manager.update_task(rem_task, {"tags": obs_task.tags})
+                self.changes_made["rem_updated"] += 1
+                change_applied = True
+            
+            elif conflicts["tags_winner"] == "rem" and allow_obs_updates:
+                if not dry_run:
+                    self.obs_manager.update_task(obs_task, {"tags": rem_task.tags})
+                self.changes_made["obs_updated"] += 1
+                change_applied = True
+            
+            elif conflicts["tags_winner"] == "merge":
+                # Merge tags from both sources
+                merged_tags = merge_tags(obs_task.tags, rem_task.tags)
+                
+                if allow_obs_updates and obs_task.tags != merged_tags:
+                    if not dry_run:
+                        self.obs_manager.update_task(obs_task, {"tags": merged_tags})
+                    self.changes_made["obs_updated"] += 1
+                    change_applied = True
+                
+                if allow_rem_updates and rem_task.tags != merged_tags:
+                    if not dry_run:
+                        self.rem_manager.update_task(rem_task, {"tags": merged_tags})
+                    self.changes_made["rem_updated"] += 1
+                    change_applied = True
+
+        # Check for tag-based rerouting after any tag updates
+        if (allow_rem_updates and "tags_winner" in conflicts):
+            # Use the updated task tags for rerouting decision
+            current_obs_tags = obs_task.tags
+            if conflicts["tags_winner"] == "merge":
+                current_obs_tags = merge_tags(obs_task.tags, rem_task.tags)
+            elif conflicts["tags_winner"] == "rem":
+                current_obs_tags = rem_task.tags
+            
+            # Create a temporary task object with updated tags for routing
+            temp_obs_task = ObsidianTask(
+                uuid=obs_task.uuid,
+                vault_id=obs_task.vault_id,
+                vault_name=obs_task.vault_name,
+                vault_path=obs_task.vault_path,
+                file_path=obs_task.file_path,
+                line_number=obs_task.line_number,
+                block_id=obs_task.block_id,
+                status=obs_task.status,
+                description=obs_task.description,
+                raw_line=obs_task.raw_line,
+                tags=current_obs_tags,  # Use updated tags
+                due_date=obs_task.due_date,
+                completion_date=obs_task.completion_date,
+                priority=obs_task.priority,
+                created_at=obs_task.created_at,
+                modified_at=obs_task.modified_at,
+            )
+            
+            target_calendar = self._should_reroute_task(temp_obs_task, rem_task.calendar_id)
+            if target_calendar:
+                self.logger.info(
+                    f"Rerouting task '{obs_task.description}' from {rem_task.calendar_id} to {target_calendar}"
+                )
+                if not dry_run:
+                    if self.rem_manager.update_task(rem_task, {"calendar_id": target_calendar}):
+                        self.changes_made["rem_rerouted"] = self.changes_made.get("rem_rerouted", 0) + 1
+                        change_applied = True
+                    else:
+                        self.logger.warning(f"Failed to reroute task '{obs_task.description}' to {target_calendar}")
+                else:
+                    self.changes_made["rem_rerouted"] = self.changes_made.get("rem_rerouted", 0) + 1
+                    change_applied = True
 
         if change_applied:
             self.changes_made["conflicts_resolved"] += 1
     
-    def _create_counterparts(self, unmatched_obs: List[ObsidianTask],
-                             unmatched_rem: List[RemindersTask],
-                             list_ids: Optional[List[str]],
-                             dry_run: bool) -> List[SyncLink]:
+    def _get_default_calendar_id(self, list_ids: Optional[List[str]]) -> Optional[str]:
+        if self.vault_default_calendar:
+            return self.vault_default_calendar
+        if list_ids:
+            return list_ids[0]
+        return self.default_calendar_id
+
+    def _select_calendar_for_obs_task(
+        self,
+        obs_task: ObsidianTask,
+        default_calendar: Optional[str],
+        list_ids: Optional[List[str]],
+    ) -> Optional[str]:
+        """Select the appropriate calendar for an Obsidian task based on tag routes.
+
+        Args:
+            obs_task: The task to route
+            default_calendar: Default calendar if no route matches
+            list_ids: Optional list of calendar IDs to restrict to. If None, all routes are considered.
+
+        Returns:
+            Calendar ID for the task
+        """
+        if self.sync_config and self.vault_id:
+            normalized_tags = {
+                tag
+                for tag in (
+                    SyncConfig._normalize_tag_value(t)
+                    for t in (getattr(obs_task, "tags", None) or [])
+                )
+                if tag
+            }
+            if normalized_tags:
+                routes = self.sync_config.get_tag_routes_for_vault(self.vault_id)
+                # Sort routes by tag specificity (longer tags first) for deterministic matching
+                sorted_routes = sorted(routes, key=lambda r: len(r.get("tag", "")), reverse=True)
+
+                for route in sorted_routes:
+                    route_tag = route.get("tag")
+                    calendar_id = route.get("calendar_id")
+                    if (
+                        route_tag
+                        and calendar_id
+                        and route_tag in normalized_tags
+                        and (not list_ids or calendar_id in list_ids)
+                    ):
+                        self.logger.debug(
+                            f"Task matches route: {route_tag} -> {calendar_id}"
+                        )
+                        return calendar_id
+        return default_calendar
+
+    def _get_route_tag_for_calendar(self, calendar_id: Optional[str]) -> Optional[str]:
+        if not (self.sync_config and self.vault_id and calendar_id):
+            return None
+        return self.sync_config.get_route_tag_for_calendar(self.vault_id, calendar_id)
+
+    def _get_list_name(self, calendar_id: Optional[str]) -> str:
+        if not self.sync_config or not calendar_id:
+            return "Reminders"
+        for lst in getattr(self.sync_config, "reminders_lists", []):
+            if getattr(lst, "identifier", None) == calendar_id:
+                return getattr(lst, "name", calendar_id)
+        return calendar_id
+
+    def _should_reroute_task(self, obs_task: ObsidianTask, current_calendar_id: str) -> Optional[str]:
+        """Check if a task should be moved to a different calendar based on its tags.
+
+        Args:
+            obs_task: The Obsidian task to check
+            current_calendar_id: The calendar ID where the task currently resides
+
+        Returns:
+            Target calendar_id if task should be moved, None otherwise
+        """
+        if not self.sync_config or not self.vault_id:
+            return None
+
+        # Get the calendar this task should route to based on its tags
+        target_calendar = self._select_calendar_for_obs_task(
+            obs_task,
+            self.vault_default_calendar,
+            None  # Check against all configured routes
+        )
+
+        # If target is different from current, task needs re-routing
+        if target_calendar and target_calendar != current_calendar_id:
+            self.logger.info(
+                f"Task '{obs_task.description}' should move from calendar {current_calendar_id} to {target_calendar}"
+            )
+            return target_calendar
+
+        return None
+
+    def _create_counterparts(
+        self,
+        unmatched_obs: List[ObsidianTask],
+        unmatched_rem: List[RemindersTask],
+        list_ids: Optional[List[str]],
+        dry_run: bool,
+    ) -> Tuple[List[SyncLink], List[ObsidianTask], List[RemindersTask]]:
         """Create counterpart tasks for unmatched items."""
-        new_links = []
+        new_links: List[SyncLink] = []
+        created_obs_tasks: List[ObsidianTask] = []
+        created_rem_tasks: List[RemindersTask] = []
         
         # Create Reminders tasks for unmatched Obsidian tasks
         if self.direction in ("both", "obs-to-rem") and unmatched_obs:
-            # Determine target calendar
-            calendar_id = None
+            default_calendar = self._get_default_calendar_id(list_ids)
 
-            # First try vault-specific mapping
-            if hasattr(self.config, 'get_vault_mapping') and self.vault_id:
-                calendar_id = self.config.get_vault_mapping(self.vault_id)
-
-            # Fallback to list_ids or default
-            if not calendar_id:
-                if list_ids and len(list_ids) > 0:
-                    calendar_id = list_ids[0]
-                else:
-                    calendar_id = self.default_calendar_id
-
-            if calendar_id:
-                for obs_task in unmatched_obs:
-                    self.logger.debug(f"Creating Reminders task for: {obs_task.description}")
-                    
-                    # Create RemindersTask object
-                    rem_task = RemindersTask(
-                        uuid=f"rem-{uuid.uuid4().hex[:8]}",
-                        item_id="",  # Will be set by gateway
-                        calendar_id=calendar_id,
-                        list_name="",  # Will be set by gateway
-                        status=obs_task.status,
-                        title=obs_task.description,
-                        due_date=obs_task.due_date,
-                        priority=obs_task.priority,
-                        notes="Created from Obsidian",
-                        created_at=datetime.now(timezone.utc).isoformat(),
-                        modified_at=datetime.now(timezone.utc).isoformat(),
-                    )
-                    
-                    if not dry_run:
-                        # Actually create the task
-                        created_task = self.rem_manager.create_task(calendar_id, rem_task)
-                        if created_task:
-                            # Create a link for the new pair
-                            link = SyncLink(
-                                obs_uuid=obs_task.uuid,
-                                rem_uuid=created_task.uuid,
-                                score=1.0,  # Perfect match as it's a copy
-                                last_synced=datetime.now(timezone.utc).isoformat(),
-                            )
-                            new_links.append(link)
-                    
-                    # Count both actual and planned creations
-                    self.changes_made["rem_created"] += 1
-                    self.changes_made["links_created"] += 1
-            else:
+            if not default_calendar and not list_ids:
                 self.logger.warning("No calendar ID available for creating Reminders tasks")
+
+            for obs_task in unmatched_obs:
+                target_calendar = self._select_calendar_for_obs_task(
+                    obs_task,
+                    default_calendar,
+                    list_ids,
+                )
+                if not target_calendar:
+                    self.logger.debug(
+                        "Skipping Reminders creation for %s - no calendar mapping",
+                        obs_task.description,
+                    )
+                    continue
+
+                list_name = self._get_list_name(target_calendar)
+                self.logger.debug(
+                    "Creating Reminders task for %s in list %s",
+                    obs_task.description,
+                    list_name,
+                )
+
+                rem_task = RemindersTask(
+                    uuid=f"rem-{uuid.uuid4().hex[:8]}",
+                    item_id="",  # Will be set by gateway
+                    calendar_id=target_calendar,
+                    list_name=list_name,
+                    status=obs_task.status,
+                    title=obs_task.description,
+                    due_date=obs_task.due_date,
+                    priority=obs_task.priority,
+                    notes="Created from Obsidian",
+                    tags=obs_task.tags,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                    modified_at=datetime.now(timezone.utc).isoformat(),
+                )
+
+                if not dry_run:
+                    created_task = self.rem_manager.create_task(target_calendar, rem_task)
+                    if created_task:
+                        created_rem_tasks.append(created_task)
+                        link = SyncLink(
+                            obs_uuid=obs_task.uuid,
+                            rem_uuid=created_task.uuid,
+                            score=1.0,
+                            vault_id=self.vault_id,
+                            last_synced=datetime.now(timezone.utc).isoformat(),
+                        )
+                        new_links.append(link)
+
+                # Count both actual and planned creations
+                self.changes_made["rem_created"] += 1
+                self.changes_made["links_created"] += 1
         
         # Create Obsidian tasks for unmatched Reminders tasks
         if self.direction in ("both", "rem-to-obs") and unmatched_rem:
             for rem_task in unmatched_rem:
                 self.logger.debug(f"Creating Obsidian task for: {rem_task.title}")
-                
-                # Create ObsidianTask object
+
+                route_tag = self._get_route_tag_for_calendar(rem_task.calendar_id)
+                obs_tags = list(rem_task.tags) if rem_task.tags else []
+                if route_tag and route_tag not in obs_tags:
+                    obs_tags.append(route_tag)
+                if "#from-reminders" not in obs_tags:
+                    obs_tags.append("#from-reminders")
+
+                vault_id = self.vault_id or os.path.basename(self.vault_path)
+                vault_name = self.vault_name or os.path.basename(self.vault_path)
+
                 obs_task = ObsidianTask(
                     uuid=f"obs-{uuid.uuid4().hex[:8]}",
-                    vault_id=os.path.basename(self.vault_path),
-                    vault_name=os.path.basename(self.vault_path),
+                    vault_id=vault_id,
+                    vault_name=vault_name,
                     vault_path=self.vault_path,
                     file_path=self.inbox_path,
                     line_number=0,  # Will be set when created
@@ -429,7 +711,7 @@ class SyncEngine:
                     due_date=rem_task.due_date,
                     completion_date=None,
                     priority=rem_task.priority,
-                    tags=["#from-reminders"],
+                    tags=obs_tags,
                     created_at=datetime.now(timezone.utc).isoformat(),
                     modified_at=datetime.now(timezone.utc).isoformat(),
                 )
@@ -440,11 +722,13 @@ class SyncEngine:
                         self.vault_path, self.inbox_path, obs_task
                     )
                     if created_task:
+                        created_obs_tasks.append(created_task)
                         # Create a link for the new pair
                         link = SyncLink(
                             obs_uuid=created_task.uuid,
                             rem_uuid=rem_task.uuid,
                             score=1.0,  # Perfect match as it's a copy
+                            vault_id=self.vault_id,
                             last_synced=datetime.now(timezone.utc).isoformat(),
                         )
                         new_links.append(link)
@@ -453,7 +737,7 @@ class SyncEngine:
                 self.changes_made["obs_created"] += 1
                 self.changes_made["links_created"] += 1
         
-        return new_links
+        return new_links, created_obs_tasks, created_rem_tasks
     
     def _detect_orphaned_tasks(
         self,
@@ -604,6 +888,7 @@ class SyncEngine:
                                     obs_uuid=candidate.uuid,
                                     rem_uuid=link.rem_uuid,
                                     score=link.score,
+                                    vault_id=link.vault_id or self.vault_id,
                                     last_synced=link.last_synced,
                                     created_at=link.created_at
                                 )
@@ -638,6 +923,7 @@ class SyncEngine:
                                             obs_uuid=best_candidate.uuid,
                                             rem_uuid=link.rem_uuid,
                                             score=best_score,
+                                            vault_id=link.vault_id or self.vault_id,
                                             last_synced=link.last_synced,
                                             created_at=link.created_at
                                         )
@@ -687,38 +973,112 @@ class SyncEngine:
         
         return final_links
     
-    def _persist_links(self, links: List[SyncLink]) -> None:
-        """Persist sync links to file."""
+    def _collect_tag_routing_summary(self, obs_tasks: List[ObsidianTask],
+                                      rem_tasks: List[RemindersTask],
+                                      links: List[SyncLink]) -> Dict[str, Dict[str, int]]:
+        """Collect summary of tasks per tag and their destination lists.
+        
+        Returns:
+            Dict mapping tags to list names and their task counts
+        """
+        if not self.sync_config or not self.vault_id:
+            return {}
+            
+        tag_routes = self.sync_config.get_tag_routes_for_vault(self.vault_id)
+        if not tag_routes:
+            return {}
+            
+        summary: Dict[str, Dict[str, int]] = {}
+        
+        # Create a map of task UUIDs that are linked
+        linked_obs_uuids = {link.obs_uuid for link in links}
+        linked_rem_uuids = {link.rem_uuid for link in links}
+        
+        # Process each configured tag route
+        for route in tag_routes:
+            tag = route.get('tag')
+            calendar_id = route.get('calendar_id')
+            if not tag or not calendar_id:
+                continue
+                
+            list_name = self._get_list_name(calendar_id)
+            
+            # Count Obsidian tasks with this tag that are synced to the target list
+            count = 0
+            for obs_task in obs_tasks:
+                if obs_task.uuid not in linked_obs_uuids:
+                    continue
+                    
+                # Check if task has the tag
+                normalized_tags = {
+                    SyncConfig._normalize_tag_value(t)
+                    for t in (obs_task.tags or [])
+                    if SyncConfig._normalize_tag_value(t)
+                }
+                
+                if tag in normalized_tags:
+                    # Find the linked Reminders task to verify it's in the right list
+                    for link in links:
+                        if link.obs_uuid == obs_task.uuid:
+                            rem_task = self._find_task(rem_tasks, link.rem_uuid)
+                            if rem_task and rem_task.calendar_id == calendar_id:
+                                count += 1
+                                break
+            
+            if count > 0:
+                if tag not in summary:
+                    summary[tag] = {}
+                summary[tag][list_name] = count
+        
+        return summary
+    
+    def _persist_links(self, links: List[SyncLink], current_obs_uuids: Optional[Set[str]] = None) -> None:
+        """Persist sync links to file, preserving other vaults' entries.
+
+        Args:
+            links: The current active links for the vault being processed.
+            current_obs_uuids: UUIDs for tasks present in this vault; used to
+                identify and replace legacy entries without vault identifiers.
+        """
         try:
-            # Expand path
             links_path = os.path.expanduser(self.links_path)
-            
-            # Load existing links if file exists
-            existing_links = {}
+            existing_map: Dict[str, Dict[str, Any]] = {}
+            current_obs_uuids = set(current_obs_uuids or [])
+
+            # Load existing links if the file already exists
             if os.path.exists(links_path):
-                try:
-                    with open(links_path, 'r') as f:
-                        data = json.load(f)
-                        for link_data in data.get('links', []):
-                            key = f"{link_data['obs_uuid']}:{link_data['rem_uuid']}"
-                            existing_links[key] = link_data
-                except (json.JSONDecodeError, KeyError):
-                    pass
-            
-            # Update with new/modified links
+                with open(links_path, 'r') as f:
+                    data = json.load(f)
+                    for entry in data.get('links', []):
+                        key = f"{entry.get('obs_uuid')}:{entry.get('rem_uuid')}"
+                        if entry.get('obs_uuid') and entry.get('rem_uuid'):
+                            existing_map[key] = entry
+
+            # Remove entries belonging to this vault so we can replace them
+            filtered_map: Dict[str, Dict[str, Any]] = {}
+            for key, entry in existing_map.items():
+                entry_vault = entry.get('vault_id')
+                entry_obs_uuid = entry.get('obs_uuid')
+
+                belongs_to_current = False
+                if entry_vault and self.vault_id and entry_vault == self.vault_id:
+                    belongs_to_current = True
+                elif not entry_vault and entry_obs_uuid in current_obs_uuids:
+                    belongs_to_current = True
+
+                if not belongs_to_current:
+                    filtered_map[key] = entry
+
+            # Add/replace with the current vault's links
             for link in links:
                 key = f"{link.obs_uuid}:{link.rem_uuid}"
-                existing_links[key] = link.to_dict()
-            
-            # Save back to file
+                filtered_map[key] = link.to_dict()
+
+            # Persist the merged set back to disk
             os.makedirs(os.path.dirname(links_path), exist_ok=True)
             with open(links_path, 'w') as f:
-                json.dump(
-                    {'links': list(existing_links.values())},
-                    f,
-                    indent=2
-                )
-            
-            self.logger.debug(f"Persisted {len(links)} links to {links_path}")
+                json.dump({'links': list(filtered_map.values())}, f, indent=2)
+
+            self.logger.debug(f"Persisted {len(links)} active links (total {len(filtered_map)}) to {links_path}")
         except Exception as e:
             self.logger.error(f"Failed to persist links: {e}")

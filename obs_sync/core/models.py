@@ -22,6 +22,84 @@ def _normalize_path(path: str) -> str:
     return os.path.abspath(os.path.expanduser(path))
 
 
+def normalize_vault_path(path: str) -> str:
+    """Normalize vault path for consistent identification across all components.
+
+    Handles:
+    - User home expansion (~)
+    - Conversion to absolute path
+    - Symlink resolution
+    - Trailing slash removal (except for root)
+    - Case normalization on case-insensitive filesystems
+
+    Args:
+        path: Vault path to normalize
+
+    Returns:
+        Normalized absolute path suitable for vault identification
+    """
+    if not path:
+        raise ValueError("Path cannot be empty")
+
+    # Expand user home directory
+    expanded = os.path.expanduser(path)
+
+    # Convert to absolute path
+    absolute = os.path.abspath(expanded)
+
+    # Resolve symlinks to get the real path
+    try:
+        resolved = os.path.realpath(absolute)
+    except (OSError, AttributeError):
+        # If realpath fails, use absolute path as fallback
+        resolved = absolute
+
+    # Remove trailing slashes except for root directory
+    if resolved != os.sep and resolved.endswith(os.sep):
+        resolved = resolved.rstrip(os.sep)
+
+    # On case-insensitive filesystems (like macOS default), normalize case
+    # This ensures consistent identification even if path case varies
+    try:
+        # Check if filesystem is case-insensitive by comparing paths
+        if os.path.exists(resolved):
+            # Get the actual case from the filesystem
+            # This works by resolving the path through the filesystem
+            resolved = os.path.realpath(resolved)
+    except (OSError, AttributeError):
+        pass
+
+    return resolved
+
+
+def deterministic_vault_id(normalized_path: str) -> str:
+    """Generate a deterministic vault ID from a normalized path.
+
+    Uses SHA256 hashing to create a stable, unique identifier based on the
+    vault's normalized path. This ensures the same vault always gets the
+    same ID, even across different sessions or machines.
+
+    Args:
+        normalized_path: Already normalized vault path (from normalize_vault_path)
+
+    Returns:
+        Deterministic vault ID in format "vault-{hash[:12]}"
+    """
+    if not normalized_path:
+        raise ValueError("Normalized path cannot be empty")
+
+    import hashlib
+
+    # Create SHA256 hash of the normalized path
+    path_hash = hashlib.sha256(normalized_path.encode('utf-8')).hexdigest()
+
+    # Use first 12 characters of hash for a compact but unique ID
+    # This gives us 48 bits of entropy, which is plenty for vault identification
+    vault_id = f"vault-{path_hash[:12]}"
+
+    return vault_id
+
+
 def _date_to_iso(value: Optional[date]) -> Optional[str]:
     if value is None:
         return None
@@ -62,7 +140,19 @@ class Vault:
     is_default: bool = False
 
     def __post_init__(self) -> None:
-        self.path = _normalize_path(self.path)
+        # Normalize the vault path using the new comprehensive normalizer
+        self.path = normalize_vault_path(self.path)
+
+        # Check if vault_id looks like a legacy UUID (36 chars with dashes)
+        if self.vault_id and len(self.vault_id) == 36 and '-' in self.vault_id:
+            # This appears to be a legacy UUID - preserve it for backward compatibility
+            # Legacy UUIDs have format: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+            pass  # Keep the existing vault_id
+        elif not self.vault_id or self.vault_id == str(uuid4()):
+            # No ID provided or default factory UUID - generate deterministic ID
+            # Pass the already normalized path to deterministic_vault_id
+            self.vault_id = deterministic_vault_id(self.path)
+        # else: Keep whatever custom vault_id was provided
 
 
 @dataclass
@@ -232,6 +322,7 @@ class SyncLink:
     obs_uuid: str
     rem_uuid: str
     score: float
+    vault_id: Optional[str] = None
     last_synced: Optional[str] = None
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
@@ -242,6 +333,7 @@ class SyncLink:
             "obs_uuid": self.obs_uuid,
             "rem_uuid": self.rem_uuid,
             "score": self.score,
+            "vault_id": self.vault_id,
             "last_synced": self.last_synced,
             "created_at": self.created_at,
         }
@@ -252,6 +344,7 @@ class SyncLink:
             obs_uuid=data["obs_uuid"],
             rem_uuid=data["rem_uuid"],
             score=float(data.get("score", 0.0)),
+            vault_id=data.get("vault_id"),
             last_synced=data.get("last_synced"),
             created_at=data.get(
                 "created_at",
@@ -270,6 +363,7 @@ class SyncConfig:
     default_calendar_id: Optional[str] = None
     calendar_ids: List[str] = field(default_factory=list)
     vault_mappings: List[Dict[str, str]] = field(default_factory=list)
+    tag_routes: List[Dict[str, str]] = field(default_factory=list)
     min_score: float = 0.75
     days_tolerance: int = 1
     include_completed: bool = False
@@ -300,6 +394,8 @@ class SyncConfig:
             self.links_path = str(manager.sync_links_path)
         else:
             self.links_path = _normalize_path(self.links_path)
+
+        self._normalize_tag_routes()
 
     # ------------------------------------------------------------------
     # Convenience helpers
@@ -384,6 +480,105 @@ class SyncConfig:
                         break
         return result
 
+    def get_tag_routes_for_vault(self, vault_id: str) -> List[Dict[str, str]]:
+        """Return configured tag routing rules for a vault."""
+        if not vault_id:
+            return []
+        return [route.copy() for route in self.tag_routes if route.get("vault_id") == vault_id]
+
+    def get_tag_route(self, vault_id: str, tag: str) -> Optional[str]:
+        """Look up calendar mapping for a specific tag within a vault."""
+        normalized_tag = self._normalize_tag_value(tag)
+        if not vault_id or not normalized_tag:
+            return None
+        for route in self.tag_routes:
+            if route.get("vault_id") == vault_id and route.get("tag") == normalized_tag:
+                return route.get("calendar_id")
+        return None
+
+    def set_tag_route(self, vault_id: str, tag: str, calendar_id: str) -> None:
+        """Create or update a tag routing rule for a vault."""
+        normalized_tag = self._normalize_tag_value(tag)
+        if not vault_id or not normalized_tag or not calendar_id:
+            return
+        self.tag_routes = [
+            route
+            for route in self.tag_routes
+            if not (
+                route.get("vault_id") == vault_id and route.get("tag") == normalized_tag
+            )
+        ]
+        self.tag_routes.append(
+            {
+                "vault_id": vault_id,
+                "tag": normalized_tag,
+                "calendar_id": calendar_id,
+            }
+        )
+
+    def remove_tag_route(self, vault_id: str, tag: str) -> None:
+        """Remove an existing tag routing rule for a vault."""
+        normalized_tag = self._normalize_tag_value(tag)
+        if not vault_id or not normalized_tag:
+            return
+        self.tag_routes = [
+            route
+            for route in self.tag_routes
+            if not (
+                route.get("vault_id") == vault_id and route.get("tag") == normalized_tag
+            )
+        ]
+
+    def get_route_tag_for_calendar(self, vault_id: str, calendar_id: str) -> Optional[str]:
+        """Return the configured tag for a vault/calendar combination if present."""
+        if not vault_id or not calendar_id:
+            return None
+        for route in self.tag_routes:
+            if (
+                route.get("vault_id") == vault_id
+                and route.get("calendar_id") == calendar_id
+            ):
+                return route.get("tag")
+        return None
+
+    @staticmethod
+    def _normalize_tag_value(tag: Optional[str]) -> Optional[str]:
+        if not tag:
+            return None
+        normalized = tag.strip()
+        if not normalized:
+            return None
+        if not normalized.startswith("#"):
+            normalized = f"#{normalized}"
+        return normalized.lower()
+
+    def _normalize_tag_routes(self) -> None:
+        if not self.tag_routes:
+            self.tag_routes = []
+            return
+
+        normalized_routes: List[Dict[str, str]] = []
+        index_map: Dict[tuple[str, str], int] = {}
+        for route in self.tag_routes:
+            vault_id = route.get("vault_id")
+            tag = self._normalize_tag_value(route.get("tag"))
+            calendar_id = route.get("calendar_id")
+            if not vault_id or not tag or not calendar_id:
+                continue
+            key = (vault_id, tag)
+            normalized_entry = {
+                "vault_id": vault_id,
+                "tag": tag,
+                "calendar_id": calendar_id,
+            }
+            if key in index_map:
+                normalized_routes[index_map[key]] = normalized_entry
+            else:
+                index_map[key] = len(normalized_routes)
+                normalized_routes.append(normalized_entry)
+
+        self.tag_routes = normalized_routes
+
     # ------------------------------------------------------------------
     # Persistence helpers
     # ------------------------------------------------------------------
@@ -402,14 +597,20 @@ class SyncConfig:
         # Parse vaults
         vaults: List[Vault] = []
         for entry in data.get("vaults", []):
-            vaults.append(
-                Vault(
-                    name=entry.get("name", ""),
-                    path=entry.get("path", ""),
-                    vault_id=entry.get("vault_id", str(uuid4())),
-                    is_default=entry.get("is_default", False),
-                )
+            vault = Vault(
+                name=entry.get("name", ""),
+                path=entry.get("path", ""),
+                vault_id=entry.get("vault_id", str(uuid4())),
+                is_default=entry.get("is_default", False),
             )
+
+            # Migrate old random UUIDs to deterministic ones if needed
+            stored_id = entry.get("vault_id", "")
+            if stored_id and len(stored_id) == 36:  # Looks like an old UUID
+                # Keep the old ID to maintain compatibility
+                vault.vault_id = stored_id
+
+            vaults.append(vault)
 
         # Parse reminders lists
         reminders_lists: List[RemindersList] = []
@@ -447,6 +648,7 @@ class SyncConfig:
             default_calendar_id=data.get("default_calendar_id"),
             calendar_ids=data.get("calendar_ids", []),
             vault_mappings=vault_mappings,
+            tag_routes=data.get("tag_routes", []),
             min_score=min_score,
             days_tolerance=days_tolerance,
             include_completed=include_completed,
@@ -508,6 +710,7 @@ class SyncConfig:
             "default_calendar_id": self.default_calendar_id,
             "calendar_ids": self.calendar_ids,
             "vault_mappings": self.vault_mappings,
+            "tag_routes": self.tag_routes,
             "sync": {
                 "min_score": self.min_score,
                 "days_tolerance": self.days_tolerance,

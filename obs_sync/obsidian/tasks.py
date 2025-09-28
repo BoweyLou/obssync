@@ -326,22 +326,85 @@ class ObsidianTaskManager:
             return False
         
         # Read file
-        with open(file_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
+        with open(file_path, 'r', encoding='utf-8') as handle:
+            lines = handle.readlines()
         
-        # Find and remove task line
-        if task.line_number > 0 and task.line_number <= len(lines):
-            line_idx = task.line_number - 1
-            line = lines[line_idx]
-            
-            # Verify it's the right task
-            if task.block_id and f"^{task.block_id}" in line:
-                lines.pop(line_idx)
-                
-                # Write back
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.writelines(lines)
-                
-                return True
+        line_idx = self._locate_task_line(task, lines)
+        if line_idx is None:
+            self.logger.debug(
+                "Unable to locate task %s in %s for deletion",
+                getattr(task, 'uuid', '<unknown>'),
+                file_path,
+            )
+            return False
         
-        return False
+        lines.pop(line_idx)
+        
+        with open(file_path, 'w', encoding='utf-8') as handle:
+            handle.writelines(lines)
+        
+        return True
+
+    def _locate_task_line(self, task: ObsidianTask, lines: List[str]) -> Optional[int]:
+        """Locate the line index for a task, even without a block ID."""
+
+        def normalize_line(value: Optional[str]) -> str:
+            if value is None:
+                return ""
+            # Collapse whitespace to improve comparison resilience
+            return " ".join(value.strip().split())
+
+        # 1. Prefer explicit block identifiers
+        block_id = getattr(task, "block_id", None)
+        if block_id:
+            token = f"^{block_id}"
+            for idx, line in enumerate(lines):
+                if token in line:
+                    return idx
+
+        # 2. Match raw line text when available
+        raw_line = getattr(task, "raw_line", None)
+        if raw_line:
+            target = normalize_line(raw_line)
+            if target:
+                for idx, line in enumerate(lines):
+                    if normalize_line(line) == target:
+                        return idx
+
+        # 3. Try the recorded line number (after verifying bounds)
+        line_number = getattr(task, "line_number", 0)
+        candidate_idx = line_number - 1
+        if 0 <= candidate_idx < len(lines):
+            candidate_line = lines[candidate_idx]
+            parsed = parse_markdown_task(candidate_line.rstrip("\n"))
+            if block_id and block_id and parsed and parsed.get("block_id") == block_id:
+                return candidate_idx
+            if raw_line and normalize_line(candidate_line) == normalize_line(raw_line):
+                return candidate_idx
+            if parsed and parsed.get("description") and normalize_line(parsed.get("description")) == normalize_line(getattr(task, "description", "")):
+                return candidate_idx
+
+        # 4. Re-parse the file and look up by UUID for an authoritative answer
+        parsed_tasks: List[ObsidianTask] = []
+        try:
+            parsed_tasks = self._parse_file(task.vault_path, task.file_path)
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+        for parsed_task in parsed_tasks:
+            if parsed_task.uuid == task.uuid:
+                candidate_idx = parsed_task.line_number - 1
+                if 0 <= candidate_idx < len(lines):
+                    return candidate_idx
+
+        # 5. Final fallback: best-effort description match
+        description = getattr(task, "description", None)
+        if description:
+            description_token = normalize_line(description)
+            if description_token:
+                for idx, line in enumerate(lines):
+                    parsed = parse_markdown_task(line.rstrip("\n"))
+                    if parsed and normalize_line(parsed.get("description")) == description_token:
+                        return idx
+
+        return None

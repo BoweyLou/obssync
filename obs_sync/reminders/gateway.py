@@ -4,7 +4,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 
 from obs_sync.core.exceptions import (
@@ -12,6 +12,7 @@ from obs_sync.core.exceptions import (
     AuthorizationError,
     EventKitImportError
 )
+from obs_sync.utils.tags import decode_tags_from_notes, encode_tags_in_notes
 
 
 @dataclass
@@ -23,6 +24,7 @@ class ReminderData:
     due_date: Optional[str] = None
     priority: Optional[str] = None
     notes: Optional[str] = None
+    tags: List[str] = field(default_factory=list)  # Added tags field
     list_id: Optional[str] = None
     list_name: Optional[str] = None
     created_at: Optional[str] = None
@@ -348,11 +350,14 @@ class RemindersGateway:
                 except:
                     pass
                 
-                # Notes
+                # Notes and Tags
                 notes = None
+                tags = []
                 try:
                     if rem.notes():
-                        notes = str(rem.notes())
+                        raw_notes = str(rem.notes())
+                        # Decode tags from notes field
+                        notes, tags = decode_tags_from_notes(raw_notes)
                 except:
                     pass
                 
@@ -395,6 +400,7 @@ class RemindersGateway:
                     due_date=due_date,
                     priority=priority,
                     notes=notes,
+                    tags=tags,  # Include decoded tags
                     list_id=list_id,
                     list_name=list_name,
                     created_at=created_at,
@@ -443,8 +449,12 @@ class RemindersGateway:
                 priority_map = {'high': 1, 'medium': 5, 'low': 9}
                 reminder.setPriority_(priority_map.get(properties['priority'], 0))
             
-            if properties.get('notes'):
-                reminder.setNotes_(str(properties['notes']))
+            # Handle notes and tags
+            notes = properties.get('notes')
+            tags = properties.get('tags', [])
+            encoded_notes = encode_tags_in_notes(notes, tags)
+            if encoded_notes:
+                reminder.setNotes_(encoded_notes)
             
             # Save
             success, error = store.saveReminder_commit_error_(reminder, True, None)
@@ -516,8 +526,31 @@ class RemindersGateway:
                 priority_map = {'high': 1, 'medium': 5, 'low': 9}
                 reminder.setPriority_(priority_map.get(updates['priority'], 0))
             
-            if 'notes' in updates:
-                reminder.setNotes_(str(updates['notes']))
+            # Handle calendar/list change
+            if 'calendar_id' in updates:
+                new_calendar_id = updates['calendar_id']
+                if new_calendar_id:
+                    all_cals = store.calendarsForEntityType_(self._EKEntityTypeReminder) or []
+                    for cal in all_cals:
+                        if str(cal.calendarIdentifier()) == new_calendar_id:
+                            reminder.setCalendar_(cal)
+                            break
+            
+            # Handle notes and tags updates
+            if 'notes' in updates or 'tags' in updates:
+                # Get current notes and tags if we're only updating one
+                current_notes = None
+                current_tags = []
+                if reminder.notes():
+                    current_notes, current_tags = decode_tags_from_notes(str(reminder.notes()))
+                
+                # Use updated values or keep current ones
+                new_notes = updates.get('notes', current_notes)
+                new_tags = updates.get('tags', current_tags)
+                
+                # Encode and set
+                encoded_notes = encode_tags_in_notes(new_notes, new_tags)
+                reminder.setNotes_(encoded_notes if encoded_notes else None)
             
             # Save
             success, error = store.saveReminder_commit_error_(reminder, True, None)

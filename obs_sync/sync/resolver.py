@@ -1,6 +1,6 @@
 """Conflict resolution for bidirectional sync."""
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 from datetime import datetime
 from ..core.models import ObsidianTask, RemindersTask, TaskStatus, Priority
 from ..utils.date import dates_equal
@@ -59,6 +59,24 @@ class ConflictResolver:
         else:
             results['priority_winner'] = 'none'
         
+        # Tag conflict
+        if self._tags_differ(obs_task.tags, rem_task.tags):
+            # For tags, we prefer merging rather than winner-takes-all
+            # unless one side has no tags at all
+            if not rem_task.tags and obs_task.tags:
+                results['tags_winner'] = 'obs'
+            elif not obs_task.tags and rem_task.tags:
+                results['tags_winner'] = 'rem'
+            else:
+                # Both have tags - merge them
+                results['tags_winner'] = 'merge'
+            
+            self.logger.debug(
+                f"Tag conflict: obs={obs_task.tags} vs rem={rem_task.tags} -> {results.get('tags_winner', 'none')}"
+            )
+        else:
+            results['tags_winner'] = 'none'
+        
         # Log if any conflicts were found
         conflicts_found = [k for k, v in results.items() if v != 'none']
         if conflicts_found:
@@ -113,3 +131,14 @@ class ConflictResolver:
         """Check if priorities differ."""
         # Treat None and missing priority as equivalent
         return obs_priority != rem_priority
+    
+    def _tags_differ(self, obs_tags: List[str], rem_tags: List[str]) -> bool:
+        """Check if tags differ between tasks."""
+        # Normalize tags for comparison (ensure # prefix)
+        def normalize(tags):
+            return set(tag if tag.startswith('#') else f"#{tag}" for tag in tags)
+        
+        obs_set = normalize(obs_tags) if obs_tags else set()
+        rem_set = normalize(rem_tags) if rem_tags else set()
+        
+        return obs_set != rem_set

@@ -52,6 +52,7 @@ class RemindersTaskManager:
                 due_date=parse_date(rem.due_date),
                 priority=priority,
                 notes=rem.notes,
+                tags=rem.tags,  # Include tags from gateway
                 created_at=rem.created_at,
                 modified_at=rem.modified_at,
             )
@@ -87,6 +88,7 @@ class RemindersTaskManager:
             due_date=due_str,
             priority=priority,
             notes=task.notes,
+            tags=task.tags,  # Include tags for creation
         )
 
         if uuid_value:
@@ -152,6 +154,15 @@ class RemindersTaskManager:
         if "notes" in changes:
             updates["notes"] = changes["notes"]
             task.notes = changes["notes"]
+        
+        if "tags" in changes:
+            updates["tags"] = changes["tags"]
+            task.tags = changes["tags"]  # Update tags
+
+        if "calendar_id" in changes:
+            new_calendar_id = changes["calendar_id"]
+            updates["calendar_id"] = new_calendar_id
+            task.calendar_id = new_calendar_id
 
         if not updates:
             return task

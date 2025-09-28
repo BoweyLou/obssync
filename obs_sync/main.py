@@ -58,7 +58,7 @@ Examples:
     setup_parser.add_argument(
         '--reconfigure',
         action='store_true',
-        help='Reconfigure even if already set up'
+        help='Reconfigure settings (choose between full reset or amending existing mappings)'
     )
     setup_parser.add_argument(
         '--add',
@@ -96,6 +96,16 @@ Examples:
         choices=['both', 'obs-to-rem', 'rem-to-obs'],
         default='both',
         help='Sync direction'
+    )
+    sync_parser.add_argument(
+        '--no-dedup',
+        action='store_true',
+        help='Disable task deduplication for this run'
+    )
+    sync_parser.add_argument(
+        '--dedup-auto-apply',
+        action='store_true',
+        help='Automatically apply deduplication without prompting'
     )
     
     # Calendar command
@@ -170,6 +180,12 @@ Examples:
             )
             
         elif args.command == 'sync':
+            # Apply CLI deduplication overrides to config
+            if hasattr(args, 'no_dedup') and args.no_dedup:
+                config.enable_deduplication = False
+            if hasattr(args, 'dedup_auto_apply') and args.dedup_auto_apply:
+                config.dedup_auto_apply = True
+                
             cmd = SyncCommand(config, verbose=args.verbose)
             success = cmd.run(apply_changes=args.apply, direction=args.direction)
             

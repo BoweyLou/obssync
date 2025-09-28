@@ -50,6 +50,10 @@ Add more vaults or Reminders lists later without redoing everything:
 ```bash
 obs-sync setup --add
 ```
+Reconfigure existing settings (offers reset or amend options):
+```bash
+obs-sync setup --reconfigure
+```
 
 3. Run your first sync:
 ```bash
@@ -59,7 +63,9 @@ obs-sync sync --apply # Apply changes
 
 ## Commands
 
-- `obs-sync setup` - Interactive configuration (`--add` to append, `--reconfigure` to restart)
+- `obs-sync setup` - Interactive configuration
+  - `--add` to append new vaults/lists to existing config
+  - `--reconfigure` to modify existing configuration (offers choice between full reset or amending mappings)
 - `obs-sync install-deps` - Install optional dependencies
 - `obs-sync sync` - Synchronize tasks
 - `obs-sync calendar` - Sync calendar events to daily notes
