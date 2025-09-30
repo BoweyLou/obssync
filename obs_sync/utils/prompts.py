@@ -124,7 +124,7 @@ def prompt_for_keeps(cluster) -> Optional[List[int]]:
     print("   Options:")
     print("   • Enter numbers separated by commas (e.g., '1,3')")
     print("   • Enter 'all' or 'skip' to keep everything")
-    print("   • Enter 'none' to delete all tasks")
+    print("   • Enter 'none' or 'n' to delete all tasks")
     print("   • Press Enter to skip this cluster")
     
     while True:
@@ -137,7 +137,7 @@ def prompt_for_keeps(cluster) -> Optional[List[int]]:
             if response in ['all', 'skip']:
                 return None
                 
-            if response == 'none':
+            if response in ['none', 'n']:
                 return []
             
             # Parse comma-separated indices

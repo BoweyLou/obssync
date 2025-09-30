@@ -8,8 +8,10 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Union, Tuple
 import logging
 from collections import defaultdict
+import json
+import os
 
-from ..core.models import ObsidianTask, RemindersTask, TaskStatus
+from ..core.models import ObsidianTask, RemindersTask, TaskStatus, SyncLink
 
 
 @dataclass
@@ -80,7 +82,8 @@ class TaskDeduplicator:
     def __init__(self, 
                  obs_manager=None,
                  rem_manager=None,
-                 logger: Optional[logging.Logger] = None):
+                 logger: Optional[logging.Logger] = None,
+                 links_path: Optional[str] = None):
         # Use lazy imports to avoid circular dependencies
         if obs_manager is None:
             from ..obsidian.tasks import ObsidianTaskManager
@@ -92,6 +95,7 @@ class TaskDeduplicator:
         self.obs_manager = obs_manager
         self.rem_manager = rem_manager
         self.logger = logger or logging.getLogger(__name__)
+        self.links_path = links_path
     
     def analyze_duplicates(self, 
                           obs_tasks: List[ObsidianTask],
@@ -268,7 +272,7 @@ class TaskDeduplicator:
                     tasks_to_delete: List[Union[ObsidianTask, RemindersTask]],
                     dry_run: bool = True) -> Dict[str, int]:
         """
-        Delete specified tasks.
+        Delete specified tasks and clean up their sync links.
         
         Args:
             tasks_to_delete: List of tasks to delete
@@ -278,6 +282,7 @@ class TaskDeduplicator:
             Dict with deletion counts by type
         """
         results = {"obs_deleted": 0, "rem_deleted": 0}
+        deleted_uuids: Set[str] = set()
         
         for task in tasks_to_delete:
             if isinstance(task, ObsidianTask):
@@ -285,11 +290,13 @@ class TaskDeduplicator:
                     success = self.obs_manager.delete_task(task)
                     if success:
                         results["obs_deleted"] += 1
+                        deleted_uuids.add(task.uuid)
                         self.logger.info("Deleted Obsidian task: %s", task.description)
                     else:
                         self.logger.error("Failed to delete Obsidian task: %s", task.description)
                 else:
                     results["obs_deleted"] += 1
+                    deleted_uuids.add(task.uuid)
                     self.logger.info("Would delete Obsidian task: %s", task.description)
             
             elif isinstance(task, RemindersTask):
@@ -297,11 +304,59 @@ class TaskDeduplicator:
                     success = self.rem_manager.delete_task(task)
                     if success:
                         results["rem_deleted"] += 1 
+                        deleted_uuids.add(task.uuid)
                         self.logger.info("Deleted Reminders task: %s", task.title)
                     else:
                         self.logger.error("Failed to delete Reminders task: %s", task.title)
                 else:
                     results["rem_deleted"] += 1
+                    deleted_uuids.add(task.uuid)
                     self.logger.info("Would delete Reminders task: %s", task.title)
         
+        # Clean up orphaned links after deletions
+        if deleted_uuids and not dry_run:
+            self._cleanup_links_for_deleted_tasks(deleted_uuids)
+        
         return results
+    
+    def _cleanup_links_for_deleted_tasks(self, deleted_uuids: Set[str]) -> None:
+        """Remove sync links for deleted tasks.
+        
+        Args:
+            deleted_uuids: UUIDs of tasks that were deleted
+        """
+        if not self.links_path:
+            self.logger.warning("No links_path configured, cannot clean up links")
+            return
+        
+        try:
+            links_path = os.path.expanduser(self.links_path)
+            if not os.path.exists(links_path):
+                self.logger.debug("No links file exists at %s", links_path)
+                return
+            
+            # Load existing links
+            with open(links_path, 'r') as f:
+                data = json.load(f)
+                links = data.get('links', [])
+            
+            # Filter out links for deleted tasks
+            original_count = len(links)
+            filtered_links = [
+                link for link in links
+                if link.get('obs_uuid') not in deleted_uuids
+                and link.get('rem_uuid') not in deleted_uuids
+            ]
+            
+            removed_count = original_count - len(filtered_links)
+            if removed_count > 0:
+                # Write back the filtered links
+                with open(links_path, 'w') as f:
+                    json.dump({'links': filtered_links}, f, indent=2)
+                
+                self.logger.info(f"Cleaned up {removed_count} orphaned link(s) after deduplication")
+            else:
+                self.logger.debug("No links needed cleanup after deduplication")
+        
+        except Exception as e:
+            self.logger.error(f"Failed to clean up links: {e}")

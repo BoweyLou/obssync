@@ -3,6 +3,7 @@
 import os
 from typing import List, Optional
 import logging
+from datetime import date
 
 from ..core.config import SyncConfig
 from ..sync.engine import SyncEngine
@@ -52,6 +53,14 @@ class SyncCommand:
                     config=self.config,
                     show_summary=True,  # Legacy single vault keeps full summary
                 )
+                
+                # Run calendar import if enabled and sync was successful
+                self.logger.debug(f"Legacy calendar import check: apply_changes={apply_changes}, sync_success={vault_result['success']}, sync_calendar_events={getattr(self.config, 'sync_calendar_events', 'MISSING')}, has_default_vault={self.config.default_vault is not None}")
+                if (apply_changes and vault_result['success'] and self.config.sync_calendar_events and
+                    self.config.default_vault):
+                    self.logger.info(f"Running legacy calendar import for vault: {self.config.default_vault.name}")
+                    self._run_calendar_import(self.config.default_vault, list_ids)
+                
                 return vault_result['success']
 
             # Process each vault mapping
@@ -115,6 +124,13 @@ class SyncCommand:
                     print(f"   ❌ Sync failed: {vault_result.get('error', 'Unknown error')}")
                 else:
                     print(f"   ✅ Sync completed")
+                    
+                    # Run calendar import if enabled and this is the default vault
+                    self.logger.debug(f"Calendar import check: apply_changes={apply_changes}, sync_calendar_events={getattr(self.config, 'sync_calendar_events', 'MISSING')}, has_default_vault={self.config.default_vault is not None}, vault_matches={vault.vault_id == self.config.default_vault.vault_id if self.config.default_vault else False}")
+                    if (apply_changes and self.config.sync_calendar_events and
+                        self.config.default_vault and vault.vault_id == self.config.default_vault.vault_id):
+                        self.logger.info(f"Running calendar import for vault: {vault.name}")
+                        self._run_calendar_import(vault, list_ids)
 
                 if idx < total_vaults:
                     print("-" * 50)
@@ -184,6 +200,7 @@ class SyncCommand:
             "links_created": 0,
             "links_deleted": 0,
             "conflicts_resolved": 0,
+            "rem_rerouted": 0,
         }
         
         # Aggregate deduplication stats
@@ -255,6 +272,7 @@ class SyncCommand:
             aggregated_changes["rem_created"],
             aggregated_changes.get("obs_deleted", 0),
             aggregated_changes.get("rem_deleted", 0),
+            aggregated_changes.get("rem_rerouted", 0),
         ])
         
         has_dedup_changes = total_dedup_obs > 0 or total_dedup_rem > 0
@@ -282,6 +300,8 @@ class SyncCommand:
                     print(f"  Removed sync links: {aggregated_changes['links_deleted']}")
                 if aggregated_changes["conflicts_resolved"]:
                     print(f"  Conflicts resolved: {aggregated_changes['conflicts_resolved']}")
+                if aggregated_changes.get("rem_rerouted", 0):
+                    print(f"  Tasks rerouted: {aggregated_changes['rem_rerouted']}")
             
             if has_dedup_changes:
                 print(f"\nDeduplication {'to perform' if dry_run else 'complete'}:")
@@ -294,6 +314,54 @@ class SyncCommand:
                 print("\n💡 This was a dry run. Use --apply to make changes.")
         else:
             print("\nNo changes needed - everything is in sync across all vaults!")
+
+    def _run_calendar_import(self, vault, list_ids: Optional[List[str]]) -> None:
+        """Run calendar import for the default vault if conditions are met."""
+        try:
+            from ..calendar.tracker import CalendarImportTracker
+            from ..calendar.gateway import CalendarGateway
+            from ..calendar.daily_notes import DailyNoteManager
+            
+            tracker = CalendarImportTracker()
+            
+            # Check if already ran today
+            if tracker.has_run_today(vault.vault_id):
+                if self.verbose:
+                    print(f"   📅 Calendar import already ran today for {vault.name}")
+                return
+            
+            # Collect all calendar IDs (union of config.calendar_ids and list_ids)
+            calendar_ids = []
+            if self.config.calendar_ids:
+                calendar_ids.extend(self.config.calendar_ids)
+            if list_ids:
+                calendar_ids.extend(list_ids)
+            
+            # Deduplicate, pass None if empty
+            calendar_ids = list(set(calendar_ids)) if calendar_ids else None
+            
+            # Initialize components
+            gateway = CalendarGateway()
+            note_manager = DailyNoteManager(vault.path)
+            
+            # Get events for today
+            today = date.today()
+            events = gateway.get_events_for_date(today, calendar_ids)
+            
+            if events:
+                print(f"   📅 Importing {len(events)} calendar events to daily note")
+                note_path = note_manager.update_daily_note(today, events)
+                print(f"   📝 Updated daily note: {note_path}")
+            else:
+                print(f"   📅 No calendar events to import for {today}")
+            
+            # Mark as completed for today
+            tracker.mark_run_today(vault.vault_id)
+            
+        except Exception as e:
+            self.logger.error(f"Calendar import failed: {e}")
+            if self.verbose:
+                print(f"   ❌ Calendar import failed: {e}")
 
 
 def sync_command(
@@ -335,6 +403,9 @@ def sync_command(
     try:
         # Run initial sync to get tasks and perform regular sync operations
         results = engine.sync(vault_path, list_ids, dry_run)
+
+        created_obs_ids = results.get('created_obs_tasks', [])
+        created_rem_ids = results.get('created_rem_tasks', [])
 
         if show_summary:
             print(f"\nSync {'Preview' if dry_run else 'Complete'}:")
@@ -393,7 +464,9 @@ def sync_command(
                 dry_run=dry_run,
                 config=config,
                 logger=logger,
-                show_summary=show_summary
+                show_summary=show_summary,
+                created_obs_ids=created_obs_ids,
+                created_rem_ids=created_rem_ids,
             )
             
             # Add deduplication stats to changes
@@ -440,6 +513,8 @@ def _run_deduplication(
     config: Optional[SyncConfig] = None,
     logger: Optional[logging.Logger] = None,
     show_summary: bool = True,
+    created_obs_ids: Optional[List[str]] = None,
+    created_rem_ids: Optional[List[str]] = None,
 ) -> dict:
     """
     Run deduplication analysis and optionally apply deletions.
@@ -466,17 +541,43 @@ def _run_deduplication(
     
     obs_manager = ObsidianTaskManager(logger=logger)
     rem_manager = RemindersTaskManager(logger=logger)
-    deduplicator = TaskDeduplicator(obs_manager, rem_manager, logger)
+    deduplicator = TaskDeduplicator(obs_manager, rem_manager, logger, links_path=config.links_path)
     
     try:
         # Get current tasks
         obs_tasks = obs_manager.list_tasks(vault_path, include_completed=config.include_completed)
         rem_tasks = rem_manager.list_tasks(list_ids, include_completed=config.include_completed)
+
+        created_obs_set = {uid for uid in (created_obs_ids or []) if uid}
+        created_rem_set = {uid for uid in (created_rem_ids or []) if uid}
+
+        if created_obs_set:
+            obs_tasks = [task for task in obs_tasks if getattr(task, "uuid", None) not in created_obs_set]
+        if created_rem_set:
+            rem_tasks = [task for task in rem_tasks if getattr(task, "uuid", None) not in created_rem_set]
+
+        if (created_obs_set or created_rem_set) and not dry_run:
+            if show_summary:
+                print("\n⏭️  Skipping deduplication for this run (new tasks were just created)")
+            logger.debug(
+                "Skipping deduplication due to newly created tasks: obs=%s rem=%s",
+                sorted(created_obs_set),
+                sorted(created_rem_set),
+            )
+            return {"obs_deleted": 0, "rem_deleted": 0}
         
         # Load existing sync links to exclude already-synced task pairs
         from ..sync.engine import SyncEngine
         temp_engine = SyncEngine({"links_path": config.links_path}, logger, sync_config=config)
         existing_links = temp_engine._load_existing_links()
+
+        if existing_links and (created_obs_set or created_rem_set):
+            existing_links = [
+                link
+                for link in existing_links
+                if getattr(link, "obs_uuid", None) not in created_obs_set
+                and getattr(link, "rem_uuid", None) not in created_rem_set
+            ]
         
         # Analyze for duplicates, excluding already-synced pairs
         dedup_results = deduplicator.analyze_duplicates(obs_tasks, rem_tasks, existing_links)

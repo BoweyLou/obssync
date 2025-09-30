@@ -35,8 +35,14 @@ class PathManager:
     @property
     def tool_root(self) -> Path:
         """Get the root directory of the obs-sync tool installation."""
-        # Try to find the directory containing obs_sync package
-        # This works whether installed as package or running from repo
+        # Priority 1: Check if we're running from a repo checkout
+        # Look for obs_tools.py (the bootstrap script) in the repo root
+        repo_root = self._find_repo_root()
+        if repo_root:
+            return repo_root
+        
+        # Priority 2: Use the obs_sync package location
+        # This will be site-packages for installed packages
         try:
             import obs_sync
             module_path = Path(obs_sync.__file__).parent
@@ -55,6 +61,42 @@ class PathManager:
             # Last resort: current working directory
             return Path.cwd()
     
+    def _find_repo_root(self) -> Optional[Path]:
+        """Find the repository root by looking for obs_tools.py marker."""
+        # Check PYTHONPATH entries for a repo checkout
+        python_path = os.environ.get('PYTHONPATH', '')
+        for path_entry in python_path.split(os.pathsep):
+            if not path_entry:
+                continue
+            candidate = Path(path_entry).resolve()
+            if (candidate / 'obs_tools.py').exists() and (candidate / 'obs_sync').is_dir():
+                self.logger.debug(f"Found repo root via PYTHONPATH: {candidate}")
+                return candidate
+        
+        # Check current working directory and parents
+        current = Path.cwd()
+        for _ in range(5):  # Check up to 5 levels up
+            if (current / 'obs_tools.py').exists() and (current / 'obs_sync').is_dir():
+                self.logger.debug(f"Found repo root via cwd: {current}")
+                return current
+            if current == current.parent:
+                break
+            current = current.parent
+        
+        # Check sys.argv[0] location
+        if hasattr(sys, 'argv') and sys.argv:
+            script_path = Path(sys.argv[0]).resolve()
+            current = script_path.parent
+            for _ in range(5):
+                if (current / 'obs_tools.py').exists() and (current / 'obs_sync').is_dir():
+                    self.logger.debug(f"Found repo root via argv: {current}")
+                    return current
+                if current == current.parent:
+                    break
+                current = current.parent
+        
+        return None
+    
     @property
     def legacy_dir(self) -> Path:
         """Get the legacy configuration directory path."""
@@ -66,9 +108,14 @@ class PathManager:
         Get the working directory for obs-sync data.
         
         Priority order:
-        1. OBS_SYNC_HOME environment variable
-        2. .obs-sync/ in tool installation directory
-        3. ~/.config/obs-sync (legacy fallback)
+        1. OBS_SYNC_HOME environment variable (explicit override)
+        2. .obs-sync/ in tool installation directory (if writable)
+           - For repo checkouts: <repo>/.obs-sync
+           - For installed packages: <site-packages-parent>/.obs-sync (usually not writable)
+        3. ~/.config/obs-sync (legacy fallback for read-only installs)
+        
+        This ensures repo-local development uses repo-local storage,
+        while read-only system installs fall back to user home directory.
         """
         if self._working_dir is not None:
             return self._working_dir
@@ -77,7 +124,7 @@ class PathManager:
         env_override = os.environ.get("OBS_SYNC_HOME")
         if env_override:
             env_path = Path(env_override).expanduser().resolve()
-            self.logger.debug(f"Using OBS_SYNC_HOME: {env_path}")
+            self.logger.debug(f"Using OBS_SYNC_HOME override: {env_path}")
             self._working_dir = env_path
             return self._working_dir
         
@@ -85,11 +132,12 @@ class PathManager:
         tool_dir = self.tool_root / self.WORKING_DIR_NAME
         
         # Check if we can write to tool directory
+        # This will succeed for repo checkouts and fail for site-packages installs
         if self._is_writable_location(tool_dir):
-            self.logger.debug(f"Using tool directory: {tool_dir}")
+            self.logger.debug(f"Using writable tool directory: {tool_dir}")
             self._working_dir = tool_dir
         else:
-            # Fall back to legacy location
+            # Fall back to legacy location for read-only installs
             self.logger.debug(f"Tool directory not writable, using legacy: {self.legacy_dir}")
             self._working_dir = self.legacy_dir
         

@@ -168,7 +168,68 @@ def test_scenario_1_add_tag_routes_preserves_links():
         assert selected_calendar == project_list.identifier, "Task should route to project list"
         print(f"✓ New task with #project correctly routes to {project_list.name}")
         
-        print("\n✅ Scenario 1 PASSED: Tag routes added without affecting existing links")
+        # Test rerouting of existing linked task when tag routes are added
+        print("\n--- Testing rerouting of existing linked task ---")
+        
+        # Create mock Obsidian and Reminders tasks that are already linked
+        existing_obs_task = ObsidianTask(
+            uuid="obs-task2",  # Matches existing link
+            vault_id=vault.vault_id,
+            vault_name=vault.name,
+            vault_path=str(vault_path),
+            file_path="tasks.md",
+            line_number=3,
+            block_id="task2",
+            status=TaskStatus.TODO,
+            description="Project task",
+            raw_line="- [ ] Project task #project ^task2",
+            tags=["#project"],
+            modified_at=datetime.now(timezone.utc)
+        )
+        
+        existing_rem_task = RemindersTask(
+            uuid="rem-002",  # Matches existing link
+            item_id="reminder-item-002",
+            calendar_id=default_list.identifier,  # Currently in default list
+            list_name=default_list.name,
+            status=TaskStatus.TODO,
+            title="Project task",
+            tags=["#project"],
+            modified_at=datetime.now(timezone.utc)
+        )
+        
+        # Check if task should be rerouted
+        engine.vault_id = vault.vault_id
+        engine.vault_path = str(vault_path)
+        target_calendar = engine._should_reroute_task(existing_obs_task, existing_rem_task.calendar_id)
+        
+        assert target_calendar is not None, "Task should be identified for rerouting"
+        assert target_calendar == project_list.identifier, f"Task should reroute to project list, got {target_calendar}"
+        print(f"✓ Existing linked task with #project correctly identified for rerouting")
+        print(f"  From: {default_list.name} ({default_list.identifier})")
+        print(f"  To: {project_list.name} ({project_list.identifier})")
+        
+        # Test that tasks without routing tags are not rerouted
+        task_without_route = ObsidianTask(
+            uuid="obs-task1",
+            vault_id=vault.vault_id,
+            vault_name=vault.name,
+            vault_path=str(vault_path),
+            file_path="tasks.md",
+            line_number=2,
+            block_id="task1",
+            status=TaskStatus.TODO,
+            description="Regular task",
+            raw_line="- [ ] Regular task ^task1",
+            tags=[],  # No tags
+            modified_at=datetime.now(timezone.utc)
+        )
+        
+        no_reroute = engine._should_reroute_task(task_without_route, default_list.identifier)
+        assert no_reroute is None, "Task without routing tags should not be rerouted"
+        print(f"✓ Task without routing tags correctly skipped for rerouting")
+        
+        print("\n✅ Scenario 1 PASSED: Tag routes added without affecting existing links, and rerouting works correctly")
 
 
 def test_scenario_2_reset_preserves_vault_ids():
@@ -509,6 +570,141 @@ def test_migration_compatibility():
         print("\n✅ Migration Compatibility PASSED: Old UUIDs preserved correctly")
 
 
+def test_scenario_4_full_sync_with_rerouting():
+    """Test full sync flow with rerouting in both dry-run and apply modes."""
+    print("\n=== Scenario 4: Full Sync with Rerouting (Dry-Run and Apply) ===")
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault_path = Path(tmpdir) / "TestVault"
+        vault_path.mkdir()
+        
+        # Create configuration
+        config = SyncConfig()
+        vault = Vault(
+            name="TestVault",
+            path=str(vault_path),
+            vault_id=generate_deterministic_vault_id(str(vault_path)),
+            is_default=True
+        )
+        config.vaults = [vault]
+        
+        default_list = RemindersList(
+            name="Default List",
+            identifier="default-list-id",
+            source_name="Reminders",
+            source_type="local"
+        )
+        project_list = RemindersList(
+            name="Projects",
+            identifier="project-list-id",
+            source_name="Reminders",
+            source_type="local"
+        )
+        config.reminders_lists = [default_list, project_list]
+        config.set_vault_mapping(vault.vault_id, default_list.identifier)
+        config.set_tag_route(vault.vault_id, "#project", project_list.identifier)
+        
+        # Set up sync engine
+        links_dir = vault_path / ".obs-sync" / "data"
+        links_dir.mkdir(parents=True)
+        links_file = links_dir / "sync_links.json"
+        
+        engine_config = {
+            "links_path": str(links_file),
+            "default_calendar_id": default_list.identifier,
+            "min_score": 0.75,
+            "days_tolerance": 1,
+        }
+        
+        # Create mock managers
+        mock_obs_manager = Mock()
+        mock_rem_manager = Mock()
+        
+        # Create test tasks
+        obs_task = ObsidianTask(
+            uuid="obs-123",
+            vault_id=vault.vault_id,
+            vault_name=vault.name,
+            vault_path=str(vault_path),
+            file_path="tasks.md",
+            line_number=1,
+            block_id="task1",
+            status=TaskStatus.TODO,
+            description="Test task",
+            raw_line="- [ ] Test task #project ^task1",
+            tags=["#project"],
+            modified_at=datetime.now(timezone.utc)
+        )
+        
+        rem_task = RemindersTask(
+            uuid="rem-456",
+            item_id="item-456",
+            calendar_id=default_list.identifier,  # Currently in wrong list
+            list_name=default_list.name,
+            status=TaskStatus.TODO,
+            title="Test task",
+            tags=["#project"],
+            modified_at=datetime.now(timezone.utc)
+        )
+        
+        # Create existing link
+        now_iso = datetime.now(timezone.utc).isoformat()
+        existing_link_data = {
+            "obs_uuid": "obs-123",
+            "rem_uuid": "rem-456",
+            "score": 1.0,
+            "vault_id": vault.vault_id,
+            "last_synced": now_iso,
+            "created_at": now_iso
+        }
+        
+        with open(links_file, 'w') as f:
+            json.dump({'links': [existing_link_data]}, f)
+        
+        # Mock manager methods
+        mock_obs_manager.list_tasks.return_value = [obs_task]
+        mock_rem_manager.list_tasks.return_value = [rem_task]
+        mock_rem_manager.update_task.return_value = True
+        
+        # Test dry-run mode
+        print("\n--- Testing dry-run mode ---")
+        engine = SyncEngine(engine_config, sync_config=config, direction="both")
+        engine.obs_manager = mock_obs_manager
+        engine.rem_manager = mock_rem_manager
+        
+        result = engine.sync(str(vault_path), [default_list.identifier, project_list.identifier], dry_run=True)
+        
+        # In dry-run, update_task should not be called
+        assert mock_rem_manager.update_task.call_count == 0, "Should not update in dry-run mode"
+        assert result['changes'].get('rem_rerouted', 0) == 1, "Should count rerouting in dry-run"
+        print("✓ Dry-run mode: rerouting counted but not applied")
+        
+        # Test apply mode
+        print("\n--- Testing apply mode ---")
+        mock_rem_manager.reset_mock()
+        engine = SyncEngine(engine_config, sync_config=config, direction="both")
+        engine.obs_manager = mock_obs_manager
+        engine.rem_manager = mock_rem_manager
+        
+        result = engine.sync(str(vault_path), [default_list.identifier, project_list.identifier], dry_run=False)
+        
+        # In apply mode, update_task should be called for rerouting
+        assert mock_rem_manager.update_task.call_count > 0, "Should update in apply mode"
+        # Check that rerouting was attempted
+        update_calls = [call for call in mock_rem_manager.update_task.call_args_list
+                       if 'calendar_id' in call[0][1]]
+        assert len(update_calls) > 0, "Should have rerouting update call"
+        assert result['changes'].get('rem_rerouted', 0) == 1, "Should count rerouting in apply mode"
+        print("✓ Apply mode: rerouting applied successfully")
+        
+        # Verify the rerouting was to the correct list
+        reroute_call = update_calls[0]
+        assert reroute_call[0][1]['calendar_id'] == project_list.identifier, "Should reroute to project list"
+        print(f"✓ Task correctly rerouted to {project_list.name}")
+        
+        print("\n✅ Scenario 4 PASSED: Full sync with rerouting works in both dry-run and apply modes")
+
+
 def run_all_tests():
     """Run all scenario tests."""
     print("=" * 70)
@@ -520,6 +716,7 @@ def run_all_tests():
         test_scenario_2_reset_preserves_vault_ids()
         test_scenario_3_tag_routing_identification()
         test_migration_compatibility()
+        test_scenario_4_full_sync_with_rerouting()
         
         print("\n" + "=" * 70)
         print("🎉 ALL TESTS PASSED SUCCESSFULLY!")

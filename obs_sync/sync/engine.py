@@ -59,6 +59,10 @@ class SyncEngine:
             "conflicts_resolved": 0,
         }
         
+        # Track tasks created during the current sync run
+        self.created_obs_task_ids: Set[str] = set()
+        self.created_rem_task_ids: Set[str] = set()
+        
         # Store vault path and config for task creation
         self.vault_path = None
         self.vault_id = None
@@ -140,6 +144,8 @@ class SyncEngine:
             "links_deleted": 0,
             "conflicts_resolved": 0,
         }
+        self.created_obs_task_ids = set()
+        self.created_rem_task_ids = set()
         
         # Store vault path for creation operations
         self.vault_path = vault_path
@@ -163,8 +169,29 @@ class SyncEngine:
         if not self.vault_id:
             self.vault_id = os.path.basename(vault_path)
 
-        if not list_ids and self.vault_default_calendar:
-            list_ids = [self.vault_default_calendar]
+        # Collect all relevant calendar IDs including routed calendars
+        requested_list_ids = list(list_ids) if isinstance(list_ids, (list, tuple, set)) else list_ids
+        list_ids = list(list_ids) if list_ids else []
+
+        if not list_ids:
+            if self.vault_default_calendar:
+                list_ids.append(self.vault_default_calendar)
+            elif self.default_calendar_id and self.default_calendar_id not in list_ids:
+                list_ids.append(self.default_calendar_id)
+
+        # Add calendars from tag routes to ensure routed tasks are always queried
+        if self.sync_config and self.vault_id:
+            for route in self.sync_config.get_tag_routes_for_vault(self.vault_id):
+                calendar_id = route.get("calendar_id")
+                if calendar_id and calendar_id not in list_ids:
+                    list_ids.append(calendar_id)
+
+        if requested_list_ids and list_ids != list(requested_list_ids):
+            self.logger.debug(
+                "Augmented requested list IDs %s with routed calendars -> %s",
+                requested_list_ids,
+                list_ids,
+            )
 
         # 1. Collect tasks from both systems
         # Always include completed tasks for matching to detect status changes
@@ -195,6 +222,38 @@ class SyncEngine:
         # 2. Load existing links and find matches
         self.logger.info("Loading existing links...")
         existing_links = self._load_existing_links()
+
+        # Filter out links that clearly belong to other vaults so matching stays scoped
+        excluded_rem_uuids: Set[str] = set()
+        excluded_obs_uuids: Set[str] = set()
+        if self.vault_id:
+            scoped_links = []
+            filtered_count = 0
+            for link in existing_links:
+                link_vault = getattr(link, "vault_id", None)
+                if link_vault and link_vault != self.vault_id:
+                    filtered_count += 1
+                    if getattr(link, "rem_uuid", None):
+                        excluded_rem_uuids.add(link.rem_uuid)
+                    if getattr(link, "obs_uuid", None):
+                        excluded_obs_uuids.add(link.obs_uuid)
+                    continue
+                scoped_links.append(link)
+            if filtered_count:
+                self.logger.debug(
+                    "Filtered %d links belonging to other vaults (current vault_id=%s)",
+                    filtered_count,
+                    self.vault_id,
+                )
+            existing_links = scoped_links
+
+        if excluded_rem_uuids:
+            rem_tasks_all = [task for task in rem_tasks_all if task.uuid not in excluded_rem_uuids]
+            rem_tasks = [task for task in rem_tasks if task.uuid not in excluded_rem_uuids]
+        if excluded_obs_uuids:
+            obs_tasks_all = [task for task in obs_tasks_all if task.uuid not in excluded_obs_uuids]
+            obs_tasks = [task for task in obs_tasks if task.uuid not in excluded_obs_uuids]
+            current_obs_uuids = {task.uuid for task in obs_tasks_all}
 
         # Attach vault identifiers to legacy links belonging to this vault
         for link in existing_links:
@@ -227,47 +286,13 @@ class SyncEngine:
             active_links=links,
         )
 
-        if orphaned_rem_uuids:
-            self.logger.info(
-                f"Found {len(orphaned_rem_uuids)} orphaned Reminders tasks (Obsidian counterparts deleted)"
-            )
-        if orphaned_obs_uuids:
-            self.logger.info(
-                f"Found {len(orphaned_obs_uuids)} orphaned Obsidian tasks (Reminders counterparts deleted)"
-            )
-
-        # Handle orphaned tasks based on sync direction
-        if self.direction in ("both", "obs-to-rem") and orphaned_rem_uuids:
-            # Delete orphaned Reminders tasks when Obsidian task was deleted
-            for rem_uuid in orphaned_rem_uuids:
-                rem_task = self._find_task(rem_tasks_all, rem_uuid)
-                if rem_task and not dry_run:
-                    self.logger.info(f"Deleting orphaned Reminders task: {rem_task.title}")
-                    self.rem_manager.delete_task(rem_task)
-                self.changes_made["rem_deleted"] = self.changes_made.get("rem_deleted", 0) + 1
-
-                # Clean up the link immediately
-                existing_links = [
-                    link for link in existing_links if link.rem_uuid != rem_uuid
-                ]
-                links = [link for link in links if link.rem_uuid != rem_uuid]
-                self.changes_made["links_deleted"] = self.changes_made.get("links_deleted", 0) + 1
-
-        if self.direction in ("both", "rem-to-obs") and orphaned_obs_uuids:
-            # Delete orphaned Obsidian tasks when Reminders task was deleted
-            for obs_uuid in orphaned_obs_uuids:
-                obs_task = self._find_task(obs_tasks_all, obs_uuid)
-                if obs_task and not dry_run:
-                    self.logger.info(f"Deleting orphaned Obsidian task: {obs_task.description}")
-                    self.obs_manager.delete_task(obs_task)
-                self.changes_made["obs_deleted"] = self.changes_made.get("obs_deleted", 0) + 1
-
-                # Clean up the link immediately
-                existing_links = [
-                    link for link in existing_links if link.obs_uuid != obs_uuid
-                ]
-                links = [link for link in links if link.obs_uuid != obs_uuid]
-                self.changes_made["links_deleted"] = self.changes_made.get("links_deleted", 0) + 1
+        # Defer orphan cleanup until after potential counterpart creation so we
+        # can avoid deleting tasks that will be recreated within this run.
+        self.logger.debug(
+            "Initial orphan detection: rem=%s obs=%s",
+            sorted(orphaned_rem_uuids),
+            sorted(orphaned_obs_uuids),
+        )
         
         self.logger.info(f"Found {len(links)} matched pairs")
         
@@ -320,6 +345,74 @@ class SyncEngine:
                         [t for t in created_rem_tasks if t.status != TaskStatus.DONE]
                     )
 
+        # Re-evaluate orphaned tasks now that new counterparts may have been created
+        final_orphaned_rem_uuids, final_orphaned_obs_uuids = self._detect_orphaned_tasks(
+            existing_links,
+            obs_tasks_all,
+            rem_tasks_all,
+            active_links=links,
+        )
+
+        # Never delete tasks that were created within this run
+        final_orphaned_rem_uuids = {
+            uuid for uuid in final_orphaned_rem_uuids if uuid not in self.created_rem_task_ids
+        }
+        final_orphaned_obs_uuids = {
+            uuid for uuid in final_orphaned_obs_uuids if uuid not in self.created_obs_task_ids
+        }
+
+        if final_orphaned_rem_uuids:
+            self.logger.info(
+                "Found %d orphaned Reminders tasks (Obsidian counterparts deleted)",
+                len(final_orphaned_rem_uuids),
+            )
+        if final_orphaned_obs_uuids:
+            self.logger.info(
+                "Found %d orphaned Obsidian tasks (Reminders counterparts deleted)",
+                len(final_orphaned_obs_uuids),
+            )
+
+        # Handle orphaned tasks based on sync direction using the filtered sets
+        if self.direction in ("both", "obs-to-rem") and final_orphaned_rem_uuids:
+            for rem_uuid in final_orphaned_rem_uuids:
+                rem_task = self._find_task(rem_tasks_all, rem_uuid)
+                if rem_task and not dry_run:
+                    self.logger.info("Deleting orphaned Reminders task: %s", rem_task.title)
+                    self.rem_manager.delete_task(rem_task)
+                elif not rem_task:
+                    self.logger.debug(
+                        "Skipping delete for orphaned Reminders task %s (task not found)",
+                        rem_uuid,
+                    )
+                self.changes_made["rem_deleted"] = self.changes_made.get("rem_deleted", 0) + 1
+
+                existing_links = [
+                    link for link in existing_links if link.rem_uuid != rem_uuid
+                ]
+                links = [link for link in links if link.rem_uuid != rem_uuid]
+                self.changes_made["links_deleted"] = self.changes_made.get("links_deleted", 0) + 1
+
+        if self.direction in ("both", "rem-to-obs") and final_orphaned_obs_uuids:
+            for obs_uuid in final_orphaned_obs_uuids:
+                obs_task = self._find_task(obs_tasks_all, obs_uuid)
+                if obs_task and not dry_run:
+                    self.logger.info(
+                        "Deleting orphaned Obsidian task: %s", obs_task.description
+                    )
+                    self.obs_manager.delete_task(obs_task)
+                elif not obs_task:
+                    self.logger.debug(
+                        "Skipping delete for orphaned Obsidian task %s (task not found)",
+                        obs_uuid,
+                    )
+                self.changes_made["obs_deleted"] = self.changes_made.get("obs_deleted", 0) + 1
+
+                existing_links = [
+                    link for link in existing_links if link.obs_uuid != obs_uuid
+                ]
+                links = [link for link in links if link.obs_uuid != obs_uuid]
+                self.changes_made["links_deleted"] = self.changes_made.get("links_deleted", 0) + 1
+
         # 5. Process each link
         for link in links:
             obs_task = self._find_task(obs_tasks_all, link.obs_uuid)
@@ -333,19 +426,71 @@ class SyncEngine:
             
             # Apply changes based on conflict resolution
             self._apply_sync_changes(obs_task, rem_task, conflicts, dry_run)
+            
+            # Check for tag-based rerouting (independent of conflict resolution)
+            # Only evaluate if task has tags that could match a route
+            if self.direction in ("both", "obs-to-rem") and obs_task.tags:
+                # Check if any tag matches a configured route for this vault
+                has_routing_tag = False
+                if self.sync_config and self.vault_id:
+                    vault_routes = self.sync_config.get_tag_routes_for_vault(self.vault_id)
+                    if vault_routes:
+                        routing_tags = {route['tag'] for route in vault_routes}
+                        has_routing_tag = any(tag in routing_tags for tag in obs_task.tags)
+                
+                if has_routing_tag:
+                    target_calendar = self._should_reroute_task(obs_task, rem_task.calendar_id)
+                    if target_calendar:
+                        list_name = self._get_list_name(target_calendar)
+                        self.logger.info(
+                            f"Rerouting task '{obs_task.description}' from {self._get_list_name(rem_task.calendar_id)} to {list_name}"
+                        )
+                        if not dry_run:
+                            if self.rem_manager.update_task(rem_task, {"calendar_id": target_calendar}):
+                                rem_task.calendar_id = target_calendar
+                                rem_task.list_name = list_name
+                                self.changes_made["rem_rerouted"] = self.changes_made.get("rem_rerouted", 0) + 1
+                            else:
+                                self.logger.warning(f"Failed to reroute task '{obs_task.description}' to {list_name}")
+                        else:
+                            self.changes_made["rem_rerouted"] = self.changes_made.get("rem_rerouted", 0) + 1
         
         # 6. Save links to persistent storage
         if not dry_run:
             # Clean up links for deleted tasks
+            # IMPORTANT: Only remove links where the OBSIDIAN task is missing.
+            # If Reminders task is missing, it might be in a different list or deleted,
+            # but we shouldn't remove the link as it might be valid for other syncs.
             cleaned_links = []
             for link in links:
                 # Only keep links where both tasks still exist
-                if (self._find_task(obs_tasks_all, link.obs_uuid) and
-                    self._find_task(rem_tasks_all, link.rem_uuid)):
+                obs_found = self._find_task(obs_tasks_all, link.obs_uuid)
+                rem_found = self._find_task(rem_tasks_all, link.rem_uuid)
+                
+                if obs_found and rem_found:
                     cleaned_links.append(link)
-                else:
+                elif obs_found and not rem_found:
+                    # Obsidian task exists but Reminders task not found
+                    # This could mean: 1) task in different list, 2) task deleted, 3) config changed
+                    # For safety, keep the link but log a warning
+                    self.logger.warning(
+                        f"Link {link.obs_uuid} <-> {link.rem_uuid}: Obsidian task found but Reminders task missing. "
+                        f"Keeping link in case Reminders task is in a different list."
+                    )
+                    cleaned_links.append(link)
+                elif not obs_found and rem_found:
+                    # Obsidian task deleted but Reminders task exists
+                    # This is a true orphan - remove the link
                     self.changes_made["links_deleted"] += 1
-                    self.logger.debug(f"Removing stale link: {link.obs_uuid} <-> {link.rem_uuid}")
+                    self.logger.info(
+                        f"Removing link for deleted Obsidian task: {link.obs_uuid} <-> {link.rem_uuid}"
+                    )
+                else:
+                    # Both tasks missing - remove the link
+                    self.changes_made["links_deleted"] += 1
+                    self.logger.debug(
+                        f"Removing stale link (both tasks missing): {link.obs_uuid} <-> {link.rem_uuid}"
+                    )
 
             if cleaned_links:
                 self._persist_links(cleaned_links, current_obs_uuids=current_obs_uuids)
@@ -361,6 +506,8 @@ class SyncEngine:
             'links': len(links),
             'changes': self.changes_made,
             'tag_summary': tag_summary,
+            'created_obs_tasks': list(self.created_obs_task_ids),
+            'created_rem_tasks': list(self.created_rem_task_ids),
             'dry_run': dry_run
         }
     
@@ -468,50 +615,6 @@ class SyncEngine:
                     if not dry_run:
                         self.rem_manager.update_task(rem_task, {"tags": merged_tags})
                     self.changes_made["rem_updated"] += 1
-                    change_applied = True
-
-        # Check for tag-based rerouting after any tag updates
-        if (allow_rem_updates and "tags_winner" in conflicts):
-            # Use the updated task tags for rerouting decision
-            current_obs_tags = obs_task.tags
-            if conflicts["tags_winner"] == "merge":
-                current_obs_tags = merge_tags(obs_task.tags, rem_task.tags)
-            elif conflicts["tags_winner"] == "rem":
-                current_obs_tags = rem_task.tags
-            
-            # Create a temporary task object with updated tags for routing
-            temp_obs_task = ObsidianTask(
-                uuid=obs_task.uuid,
-                vault_id=obs_task.vault_id,
-                vault_name=obs_task.vault_name,
-                vault_path=obs_task.vault_path,
-                file_path=obs_task.file_path,
-                line_number=obs_task.line_number,
-                block_id=obs_task.block_id,
-                status=obs_task.status,
-                description=obs_task.description,
-                raw_line=obs_task.raw_line,
-                tags=current_obs_tags,  # Use updated tags
-                due_date=obs_task.due_date,
-                completion_date=obs_task.completion_date,
-                priority=obs_task.priority,
-                created_at=obs_task.created_at,
-                modified_at=obs_task.modified_at,
-            )
-            
-            target_calendar = self._should_reroute_task(temp_obs_task, rem_task.calendar_id)
-            if target_calendar:
-                self.logger.info(
-                    f"Rerouting task '{obs_task.description}' from {rem_task.calendar_id} to {target_calendar}"
-                )
-                if not dry_run:
-                    if self.rem_manager.update_task(rem_task, {"calendar_id": target_calendar}):
-                        self.changes_made["rem_rerouted"] = self.changes_made.get("rem_rerouted", 0) + 1
-                        change_applied = True
-                    else:
-                        self.logger.warning(f"Failed to reroute task '{obs_task.description}' to {target_calendar}")
-                else:
-                    self.changes_made["rem_rerouted"] = self.changes_made.get("rem_rerouted", 0) + 1
                     change_applied = True
 
         if change_applied:
@@ -645,9 +748,10 @@ class SyncEngine:
 
                 list_name = self._get_list_name(target_calendar)
                 self.logger.debug(
-                    "Creating Reminders task for %s in list %s",
+                    "Creating Reminders task for %s in list %s (obs_uuid=%s)",
                     obs_task.description,
                     list_name,
+                    obs_task.uuid,
                 )
 
                 rem_task = RemindersTask(
@@ -666,9 +770,12 @@ class SyncEngine:
                 )
 
                 if not dry_run:
+                    self.logger.debug(f"About to call rem_manager.create_task for {obs_task.description}")
                     created_task = self.rem_manager.create_task(target_calendar, rem_task)
+                    self.logger.debug(f"rem_manager.create_task returned: {created_task}")
                     if created_task:
                         created_rem_tasks.append(created_task)
+                        self.created_rem_task_ids.add(created_task.uuid)
                         link = SyncLink(
                             obs_uuid=obs_task.uuid,
                             rem_uuid=created_task.uuid,
@@ -677,6 +784,10 @@ class SyncEngine:
                             last_synced=datetime.now(timezone.utc).isoformat(),
                         )
                         new_links.append(link)
+                        self.logger.debug(
+                            f"Created link: obs={obs_task.uuid} <-> rem={created_task.uuid} "
+                            f"for task '{obs_task.description}'"
+                        )
 
                 # Count both actual and planned creations
                 self.changes_made["rem_created"] += 1
@@ -723,6 +834,7 @@ class SyncEngine:
                     )
                     if created_task:
                         created_obs_tasks.append(created_task)
+                        self.created_obs_task_ids.add(created_task.uuid)
                         # Create a link for the new pair
                         link = SyncLink(
                             obs_uuid=created_task.uuid,

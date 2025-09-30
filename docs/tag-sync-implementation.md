@@ -119,7 +119,6 @@ This helps track how tasks are distributed across lists based on their tags.
 
 ```python
 # Obsidian task with tags
-- [ ] Review PR #work #urgent #code-review
 
 # Syncs to Reminders with notes field:
 """

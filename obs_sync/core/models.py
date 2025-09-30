@@ -374,6 +374,8 @@ class SyncConfig:
     # Deduplication settings
     enable_deduplication: bool = True
     dedup_auto_apply: bool = False
+    # Calendar integration settings
+    sync_calendar_events: bool = False
 
     def __post_init__(self) -> None:
         # Get the path manager
@@ -529,6 +531,207 @@ class SyncConfig:
             )
         ]
 
+    def remove_vault(self, vault_id: str) -> bool:
+        """Remove a vault and all its associated data.
+        
+        Args:
+            vault_id: The vault ID to remove
+            
+        Returns:
+            True if vault was found and removed, False otherwise
+        """
+        if not vault_id:
+            return False
+            
+        # Find the vault to remove
+        vault_to_remove = None
+        for vault in self.vaults:
+            if vault.vault_id == vault_id:
+                vault_to_remove = vault
+                break
+                
+        if not vault_to_remove:
+            return False
+            
+        # Remove the vault from the list
+        self.vaults = [v for v in self.vaults if v.vault_id != vault_id]
+        
+        # Clear vault mappings
+        self.vault_mappings = [
+            m for m in self.vault_mappings
+            if m.get("vault_id") != vault_id
+        ]
+        
+        # Clear tag routes for this vault
+        self.tag_routes = [
+            route for route in self.tag_routes
+            if route.get("vault_id") != vault_id
+        ]
+        
+        # Handle default vault changes
+        if self.default_vault_id == vault_id:
+            self.default_vault_id = None
+            # Set first remaining vault as default if any exist
+            if self.vaults:
+                self.vaults[0].is_default = True
+                self.default_vault_id = self.vaults[0].vault_id
+                
+        # Update is_default flags for remaining vaults
+        for vault in self.vaults:
+            vault.is_default = (vault.vault_id == self.default_vault_id)
+            
+        return True
+
+    def remove_reminders_list(self, list_id: str) -> bool:
+        """Remove a Reminders list and all its associated data.
+        
+        Args:
+            list_id: The list identifier to remove
+            
+        Returns:
+            True if list was found and removed, False otherwise
+        """
+        if not list_id:
+            return False
+            
+        # Find the list to remove
+        list_to_remove = None
+        for lst in self.reminders_lists:
+            if lst.identifier == list_id:
+                list_to_remove = lst
+                break
+                
+        if not list_to_remove:
+            return False
+            
+        # Remove the list from the list
+        self.reminders_lists = [
+            lst for lst in self.reminders_lists
+            if lst.identifier != list_id
+        ]
+        
+        # Remove from calendar_ids
+        if list_id in self.calendar_ids:
+            self.calendar_ids.remove(list_id)
+            
+        # Clear vault mappings that reference this list
+        self.vault_mappings = [
+            m for m in self.vault_mappings
+            if m.get("calendar_id") != list_id
+        ]
+        
+        # Clear tag routes that reference this list
+        self.tag_routes = [
+            route for route in self.tag_routes
+            if route.get("calendar_id") != list_id
+        ]
+        
+        # Handle default calendar changes
+        if self.default_calendar_id == list_id:
+            self.default_calendar_id = None
+            # Set first remaining list as default if any exist
+            if self.reminders_lists:
+                self.default_calendar_id = self.reminders_lists[0].identifier
+                
+        return True
+
+    def get_vault_removal_impact(self, vault_id: str) -> Dict[str, Any]:
+        """Get summary of what would be affected by removing a vault.
+        
+        Args:
+            vault_id: The vault ID to analyze
+            
+        Returns:
+            Dictionary with impact summary
+        """
+        impact = {
+            "vault_found": False,
+            "vault_name": None,
+            "is_default": False,
+            "mappings_cleared": 0,
+            "tag_routes_cleared": 0,
+            "tag_routes": []
+        }
+        
+        # Find the vault
+        for vault in self.vaults:
+            if vault.vault_id == vault_id:
+                impact["vault_found"] = True
+                impact["vault_name"] = vault.name
+                impact["is_default"] = vault.is_default
+                break
+                
+        if not impact["vault_found"]:
+            return impact
+            
+        # Count mappings
+        impact["mappings_cleared"] = len([
+            m for m in self.vault_mappings
+            if m.get("vault_id") == vault_id
+        ])
+        
+        # Collect tag routes
+        tag_routes = [
+            route for route in self.tag_routes
+            if route.get("vault_id") == vault_id
+        ]
+        impact["tag_routes_cleared"] = len(tag_routes)
+        impact["tag_routes"] = tag_routes
+        
+        return impact
+
+    def get_list_removal_impact(self, list_id: str) -> Dict[str, Any]:
+        """Get summary of what would be affected by removing a Reminders list.
+        
+        Args:
+            list_id: The list identifier to analyze
+            
+        Returns:
+            Dictionary with impact summary
+        """
+        impact = {
+            "list_found": False,
+            "list_name": None,
+            "is_default": False,
+            "mappings_cleared": 0,
+            "tag_routes_cleared": 0,
+            "affected_vaults": []
+        }
+        
+        # Find the list
+        for lst in self.reminders_lists:
+            if lst.identifier == list_id:
+                impact["list_found"] = True
+                impact["list_name"] = lst.name
+                impact["is_default"] = (lst.identifier == self.default_calendar_id)
+                break
+                
+        if not impact["list_found"]:
+            return impact
+            
+        # Count mappings
+        mappings = [
+            m for m in self.vault_mappings
+            if m.get("calendar_id") == list_id
+        ]
+        impact["mappings_cleared"] = len(mappings)
+        
+        # Find affected vaults
+        for mapping in mappings:
+            vault_id = mapping.get("vault_id")
+            for vault in self.vaults:
+                if vault.vault_id == vault_id:
+                    impact["affected_vaults"].append(vault.name)
+                    break
+        
+        # Count tag routes
+        impact["tag_routes_cleared"] = len([
+            route for route in self.tag_routes
+            if route.get("calendar_id") == list_id
+        ])
+        
+        return impact
+
     def get_route_tag_for_calendar(self, vault_id: str, calendar_id: str) -> Optional[str]:
         """Return the configured tag for a vault/calendar combination if present."""
         if not vault_id or not calendar_id:
@@ -655,6 +858,7 @@ class SyncConfig:
             obsidian_inbox_path=sync_settings.get(
                 "obsidian_inbox_path", data.get("obsidian_inbox_path", "AppleRemindersInbox.md")
             ),
+            sync_calendar_events=sync_settings.get("sync_calendar_events", False),
             obsidian_index_path=paths.get(
                 "obsidian_index", data.get("obsidian_index_path", None)
             ),
@@ -716,6 +920,7 @@ class SyncConfig:
                 "days_tolerance": self.days_tolerance,
                 "include_completed": self.include_completed,
                 "obsidian_inbox_path": self.obsidian_inbox_path,
+                "sync_calendar_events": self.sync_calendar_events,
             },
             "paths": {
                 "obsidian_index": self.obsidian_index_path,

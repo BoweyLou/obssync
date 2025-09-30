@@ -425,12 +425,23 @@ class RemindersGateway:
             reminder.setTitle_(title)
             
             # Set calendar/list
+            calendar_set = False
             if list_id:
                 all_cals = store.calendarsForEntityType_(self._EKEntityTypeReminder) or []
+                self.logger.debug(f"Looking for calendar with ID: {list_id}")
+                self.logger.debug(f"Available calendars: {[(cal.title(), str(cal.calendarIdentifier())) for cal in all_cals]}")
                 for cal in all_cals:
                     if str(cal.calendarIdentifier()) == list_id:
                         reminder.setCalendar_(cal)
+                        calendar_set = True
+                        self.logger.debug(f"Set calendar to: {cal.title()}")
                         break
+                
+                if not calendar_set:
+                    self.logger.error(f"Calendar with ID '{list_id}' not found among available calendars")
+                    return None
+            else:
+                self.logger.warning("No list_id provided, will use default calendar")
             
             # Set properties
             if properties.get('due_date'):
@@ -458,11 +469,18 @@ class RemindersGateway:
             
             # Save
             success, error = store.saveReminder_commit_error_(reminder, True, None)
+            self.logger.debug(f"saveReminder result: success={success}, error={error}")
             if success:
-                return str(reminder.calendarItemIdentifier())
+                uuid_result = str(reminder.calendarItemIdentifier())
+                self.logger.debug(f"Created reminder with UUID: {uuid_result}")
+                return uuid_result
+            else:
+                self.logger.error(f"Failed to save reminder '{title}': error={error}")
             
         except Exception as e:
-            self.logger.error(f"Failed to create reminder: {e}")
+            self.logger.error(f"Failed to create reminder '{title}': {e}")
+            import traceback
+            self.logger.debug(traceback.format_exc())
         
         return None
     

@@ -373,7 +373,8 @@ def test_keep_selection_prompts(mock_input):
         ('skip', None),  # Skip cluster
         ('', None),  # Empty input (skip)
         ('all', None),  # Keep all
-        ('none', [])  # Delete all
+        ('none', []),  # Delete all
+        ('n', [])  # Delete all (shortcut)
     ]
     
     for input_val, expected in test_cases:

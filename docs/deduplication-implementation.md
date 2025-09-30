@@ -102,7 +102,7 @@ This prevents the common issue where properly synced Obsidian ↔ Reminders task
    Options:
    • Enter numbers separated by commas (e.g., '1,3')
    • Enter 'all' or 'skip' to keep everything
-   • Enter 'none' to delete all tasks
+   • Enter 'none' or 'n' to delete all tasks
    • Press Enter to skip this cluster
    Keep: 1,3
 

@@ -91,6 +91,8 @@ class RemindersTaskManager:
             tags=task.tags,  # Include tags for creation
         )
 
+        self.logger.debug(f"RemindersGateway.create_reminder returned uuid: {uuid_value}")
+        
         if uuid_value:
             now = datetime.now(timezone.utc).isoformat()
             task.uuid = uuid_value
@@ -98,8 +100,10 @@ class RemindersTaskManager:
             task.calendar_id = list_id
             task.created_at = now
             task.modified_at = now
+            self.logger.debug(f"Returning created task with uuid: {task.uuid}")
             return task
 
+        self.logger.warning(f"Failed to create Reminders task: {task.title}")
         return None
     
     def update_task(

@@ -3,6 +3,7 @@ Setup command for initial configuration.
 """
 
 import os
+import traceback
 from collections import Counter
 from pathlib import Path
 from typing import List, Optional, Set
@@ -198,6 +199,11 @@ class SetupCommand:
         include_input = input().strip().lower()
         self.config.include_completed = include_input == 'y'
 
+        # Calendar sync
+        print("Sync calendar events to daily notes? (y/n) [default: n]: ", end="")
+        calendar_input = input().strip().lower()
+        self.config.sync_calendar_events = calendar_input == 'y'
+
         print("\n✅ Setup complete!")
         print("\nNext steps:")
         print("  1. Run 'obs-sync sync' to preview sync")
@@ -296,6 +302,80 @@ class SetupCommand:
             print(f"  ✓ Cleared {cleared_count} inbox file(s)")
         else:
             print("  ✓ No inbox files found to clear")
+
+    def _clear_vault_inbox(self, vault_path: str, vault_name: str) -> bool:
+        """Clear inbox file from a specific vault.
+        
+        Args:
+            vault_path: Path to the vault
+            vault_name: Name of the vault (for logging)
+            
+        Returns:
+            True if inbox was cleared or didn't exist, False on error
+        """
+        try:
+            vault_path_obj = Path(vault_path)
+            if not vault_path_obj.exists():
+                if self.verbose:
+                    print(f"  ⚠️  Vault path does not exist: {vault_path}")
+                return True  # Consider non-existent path as "cleared"
+                
+            inbox_path = vault_path_obj / self.config.obsidian_inbox_path
+            if inbox_path.exists():
+                inbox_path.unlink()
+                print(f"  ✓ Removed inbox from {vault_name}: {inbox_path}")
+            elif self.verbose:
+                print(f"  ✓ No inbox file found in {vault_name}")
+            return True
+            
+        except Exception as e:
+            print(f"  ⚠️  Could not clear inbox from {vault_name}: {e}")
+            if self.verbose:
+                traceback.print_exc()
+            return False
+
+    def _clear_vault_sync_links(self, vault_id: str) -> None:
+        """Clear sync links for a specific vault from the links store.
+        
+        Args:
+            vault_id: The vault ID to clear links for
+        """
+        try:
+            from ..utils.io import safe_read_json, safe_write_json
+            from ..core.paths import get_path_manager
+            path_manager = get_path_manager()
+            sync_links_path = path_manager.sync_links_path
+            
+            if not sync_links_path.exists():
+                if self.verbose:
+                    print("  ✓ No sync links file found")
+                return
+                
+            # Load existing links
+            links_data = safe_read_json(str(sync_links_path), default={"links": []})
+            original_count = len(links_data.get("links", []))
+            
+            # Filter out links for the removed vault
+            filtered_links = [
+                link for link in links_data.get("links", [])
+                if link.get("vault_id") != vault_id
+            ]
+            
+            # Save filtered links
+            links_data["links"] = filtered_links
+            if safe_write_json(str(sync_links_path), links_data):
+                removed_count = original_count - len(filtered_links)
+                if removed_count > 0:
+                    print(f"  ✓ Removed {removed_count} sync link(s) for vault")
+                elif self.verbose:
+                    print("  ✓ No sync links found for vault")
+            else:
+                print("  ⚠️  Could not update sync links file")
+                
+        except Exception as e:
+            print(f"  ⚠️  Could not clear sync links: {e}")
+            if self.verbose:
+                traceback.print_exc()
     
     def _run_amend_flow(self) -> bool:
         """Amend existing vault/list mappings and tag routes without full reset."""
@@ -316,17 +396,20 @@ class SetupCommand:
         print("  2. Tag routing rules")
         print("  3. Default vault")
         print("  4. Default Reminders list")
-        print("  5. All of the above")
-        print("  6. Cancel")
+        print("  5. Calendar sync settings")
+        print("  6. Remove a vault")
+        print("  7. Remove a Reminders list")
+        print("  8. All of the above (options 1-5)")
+        print("  9. Cancel")
         
         choice = input("\nSelect options (comma-separated, e.g. '1,2' or 'all'): ").strip()
         
-        if choice == '6' or choice.lower() == 'cancel':
+        if choice == '9' or choice.lower() == 'cancel':
             print("\nAmendment cancelled.")
             return True
         
-        if choice == '5' or choice.lower() == 'all':
-            choices = ['1', '2', '3', '4']
+        if choice == '8' or choice.lower() == 'all':
+            choices = ['1', '2', '3', '4', '5']
         else:
             choices = [c.strip() for c in choice.split(',')]
         
@@ -341,6 +424,15 @@ class SetupCommand:
         
         if '4' in choices:
             self._amend_default_list()
+        
+        if '5' in choices:
+            self._amend_calendar_sync()
+        
+        if '6' in choices:
+            self._remove_vault()
+        
+        if '7' in choices:
+            self._remove_reminders_list()
         
         print("\n✅ Configuration amendments complete!")
         return True
@@ -422,6 +514,36 @@ class SetupCommand:
                     print(f"✓ Default list updated to: {self.config.reminders_lists[choice - 1].name}")
             except (ValueError, IndexError):
                 print("⚠️ Invalid selection. Keeping current default.")
+    
+    def _amend_calendar_sync(self) -> None:
+        """Amend the calendar sync setting."""
+        current_status = "enabled" if self.config.sync_calendar_events else "disabled"
+        print(f"\n📅 Calendar sync to daily notes is currently: {current_status}")
+        print("\nCalendar sync automatically imports Apple Calendar events to your default vault's")
+        print("daily notes when running 'obs-sync sync --apply' (once per day).")
+        
+        new_setting = "n" if self.config.sync_calendar_events else "y"
+        action = "disable" if self.config.sync_calendar_events else "enable"
+        
+        choice = input(f"\nWould you like to {action} calendar sync? (y/n) [default: {new_setting}]: ").strip().lower()
+        
+        if not choice:
+            choice = new_setting
+        
+        if choice == 'y':
+            if not self.config.sync_calendar_events:
+                self.config.sync_calendar_events = True
+                print("✓ Calendar sync enabled")
+            else:
+                print("Calendar sync is already enabled")
+        elif choice == 'n':
+            if self.config.sync_calendar_events:
+                self.config.sync_calendar_events = False
+                print("✓ Calendar sync disabled")
+            else:
+                print("Calendar sync is already disabled")
+        else:
+            print("⚠️ Invalid choice. No changes made.")
     
     def _continue_full_setup(self) -> bool:
         """Continue with the original full setup flow after reset choice."""
@@ -589,6 +711,11 @@ class SetupCommand:
         print("\nNext steps:")
         print("  1. Run 'obs-sync sync' to preview sync")
         print("  2. Run 'obs-sync sync --apply' to apply changes")
+
+        # Calendar sync
+        print("Sync calendar events to daily notes? (y/n) [default: n]: ", end="")
+        calendar_input = input().strip().lower()
+        self.config.sync_calendar_events = calendar_input == 'y'
 
         return True
     
@@ -1046,6 +1173,203 @@ class SetupCommand:
         self.config.default_vault_id = vault_id
         for vault in self.config.vaults:
             vault.is_default = vault.vault_id == vault_id
+
+    def _remove_vault(self) -> None:
+        """Handle vault removal flow."""
+        if not self.config.vaults:
+            print("\n❌ No vaults configured to remove.")
+            return
+            
+        print("\n🗑️  Remove Vault")
+        print("\nConfigured vaults:")
+        
+        for i, vault in enumerate(self.config.vaults, 1):
+            default_marker = " (default)" if vault.is_default else ""
+            print(f"  {i}. {vault.name}{default_marker}")
+            
+        try:
+            choice = input(f"\nSelect vault to remove (1-{len(self.config.vaults)}, or 'cancel'): ").strip()
+            
+            if choice.lower() == 'cancel':
+                print("Vault removal cancelled.")
+                return
+                
+            vault_index = int(choice) - 1
+            if vault_index < 0 or vault_index >= len(self.config.vaults):
+                print("❌ Invalid vault selection.")
+                return
+                
+        except (ValueError, KeyboardInterrupt):
+            print("❌ Invalid input or cancelled.")
+            return
+            
+        vault_to_remove = self.config.vaults[vault_index]
+        
+        # Get impact analysis
+        impact = self.config.get_vault_removal_impact(vault_to_remove.vault_id)
+        
+        print(f"\n⚠️  Impact of removing vault '{vault_to_remove.name}':")
+        if impact["is_default"]:
+            remaining_vaults = len(self.config.vaults) - 1
+            if remaining_vaults > 0:
+                print(f"  • This is the default vault - you'll need to select a new default")
+            else:
+                print(f"  • This is the only remaining vault - removal will leave you with no vaults")
+                
+        if impact["mappings_cleared"] > 0:
+            print(f"  • {impact['mappings_cleared']} vault mapping(s) will be cleared")
+            
+        if impact["tag_routes_cleared"] > 0:
+            print(f"  • {impact['tag_routes_cleared']} tag routing rule(s) will be cleared:")
+            for route in impact["tag_routes"]:
+                tag = route.get("tag", "")
+                calendar_id = route.get("calendar_id", "")
+                # Find list name
+                list_name = calendar_id
+                for lst in self.config.reminders_lists:
+                    if lst.identifier == calendar_id:
+                        list_name = lst.name
+                        break
+                print(f"    - Tag '{tag}' → {list_name}")
+                
+        print(f"  • Inbox file will be removed from vault (if exists)")
+        print(f"  • All sync links for this vault will be removed")
+        
+        confirm = input(f"\nAre you sure you want to remove '{vault_to_remove.name}'? (yes/no): ").strip().lower()
+        if confirm not in ['yes', 'y']:
+            print("Vault removal cancelled.")
+            return
+            
+        # Handle default vault change before removal
+        if impact["is_default"] and len(self.config.vaults) > 1:
+            remaining_vaults = [v for v in self.config.vaults if v.vault_id != vault_to_remove.vault_id]
+            print(f"\nSelect new default vault:")
+            for i, vault in enumerate(remaining_vaults, 1):
+                print(f"  {i}. {vault.name}")
+                
+            try:
+                new_default_choice = input(f"Select new default (1-{len(remaining_vaults)}): ").strip()
+                new_default_index = int(new_default_choice) - 1
+                if new_default_index < 0 or new_default_index >= len(remaining_vaults):
+                    print("❌ Invalid selection. Removal cancelled.")
+                    return
+                new_default_vault = remaining_vaults[new_default_index]
+            except (ValueError, KeyboardInterrupt):
+                print("❌ Invalid input. Removal cancelled.")
+                return
+        else:
+            new_default_vault = None
+            
+        # Perform the removal
+        print(f"\n🗑️  Removing vault '{vault_to_remove.name}'...")
+        
+        # Clear vault-specific data
+        self._clear_vault_inbox(vault_to_remove.path, vault_to_remove.name)
+        self._clear_vault_sync_links(vault_to_remove.vault_id)
+        
+        # Remove from config (this handles mappings, tag routes, and defaults)
+        if self.config.remove_vault(vault_to_remove.vault_id):
+            # Set new default if we had to choose one
+            if new_default_vault:
+                self._set_default_vault(new_default_vault.vault_id)
+                print(f"  ✓ Set '{new_default_vault.name}' as new default vault")
+                
+            print(f"  ✓ Removed vault '{vault_to_remove.name}' from configuration")
+            print(f"  ✓ Cleared {impact['mappings_cleared']} vault mapping(s)")
+            print(f"  ✓ Cleared {impact['tag_routes_cleared']} tag routing rule(s)")
+        else:
+            print(f"  ❌ Failed to remove vault from configuration")
+
+    def _remove_reminders_list(self) -> None:
+        """Handle Reminders list removal flow."""
+        if not self.config.reminders_lists:
+            print("\n❌ No Reminders lists configured to remove.")
+            return
+            
+        print("\n🗑️  Remove Reminders List")
+        print("\nConfigured lists:")
+        
+        for i, lst in enumerate(self.config.reminders_lists, 1):
+            default_marker = " (default)" if lst.identifier == self.config.default_calendar_id else ""
+            print(f"  {i}. {lst.name}{default_marker}")
+            
+        try:
+            choice = input(f"\nSelect list to remove (1-{len(self.config.reminders_lists)}, or 'cancel'): ").strip()
+            
+            if choice.lower() == 'cancel':
+                print("List removal cancelled.")
+                return
+                
+            list_index = int(choice) - 1
+            if list_index < 0 or list_index >= len(self.config.reminders_lists):
+                print("❌ Invalid list selection.")
+                return
+                
+        except (ValueError, KeyboardInterrupt):
+            print("❌ Invalid input or cancelled.")
+            return
+            
+        list_to_remove = self.config.reminders_lists[list_index]
+        
+        # Get impact analysis
+        impact = self.config.get_list_removal_impact(list_to_remove.identifier)
+        
+        print(f"\n⚠️  Impact of removing list '{list_to_remove.name}':")
+        if impact["is_default"]:
+            remaining_lists = len(self.config.reminders_lists) - 1
+            if remaining_lists > 0:
+                print(f"  • This is the default list - you'll need to select a new default")
+            else:
+                print(f"  • This is the only remaining list - removal will leave you with no lists")
+                
+        if impact["mappings_cleared"] > 0:
+            print(f"  • {impact['mappings_cleared']} vault mapping(s) will be cleared:")
+            for vault_name in impact["affected_vaults"]:
+                print(f"    - {vault_name}")
+                
+        if impact["tag_routes_cleared"] > 0:
+            print(f"  • {impact['tag_routes_cleared']} tag routing rule(s) will be cleared")
+            
+        confirm = input(f"\nAre you sure you want to remove '{list_to_remove.name}'? (yes/no): ").strip().lower()
+        if confirm not in ['yes', 'y']:
+            print("List removal cancelled.")
+            return
+            
+        # Handle default list change before removal
+        if impact["is_default"] and len(self.config.reminders_lists) > 1:
+            remaining_lists = [lst for lst in self.config.reminders_lists if lst.identifier != list_to_remove.identifier]
+            print(f"\nSelect new default list:")
+            for i, lst in enumerate(remaining_lists, 1):
+                print(f"  {i}. {lst.name}")
+                
+            try:
+                new_default_choice = input(f"Select new default (1-{len(remaining_lists)}): ").strip()
+                new_default_index = int(new_default_choice) - 1
+                if new_default_index < 0 or new_default_index >= len(remaining_lists):
+                    print("❌ Invalid selection. Removal cancelled.")
+                    return
+                new_default_list = remaining_lists[new_default_index]
+            except (ValueError, KeyboardInterrupt):
+                print("❌ Invalid input. Removal cancelled.")
+                return
+        else:
+            new_default_list = None
+            
+        # Perform the removal
+        print(f"\n🗑️  Removing list '{list_to_remove.name}'...")
+        
+        # Remove from config (this handles mappings, tag routes, and defaults)
+        if self.config.remove_reminders_list(list_to_remove.identifier):
+            # Set new default if we had to choose one
+            if new_default_list:
+                self.config.default_calendar_id = new_default_list.identifier
+                print(f"  ✓ Set '{new_default_list.name}' as new default list")
+                
+            print(f"  ✓ Removed list '{list_to_remove.name}' from configuration")
+            print(f"  ✓ Cleared {impact['mappings_cleared']} vault mapping(s)")
+            print(f"  ✓ Cleared {impact['tag_routes_cleared']} tag routing rule(s)")
+        else:
+            print(f"  ❌ Failed to remove list from configuration")
 
     @staticmethod
     def _normalize_path(path: str) -> str:
