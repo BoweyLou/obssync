@@ -253,7 +253,7 @@ Just run the sync command whenever you want to synchronise:
 obs-sync sync --apply
 ```
 
-**Pro tip**: Add this to a cron job or use macOS Shortcuts for automatic syncing.
+**Pro tip**: On macOS, enable built-in automation via `obs-sync setup --reconfigure` (option 8) to schedule automatic syncing.
 
 ---
 
@@ -384,6 +384,48 @@ obs-sync sync --apply
 - Same or similar due dates (within 1 day tolerance)
 - Detects both Obsidian-Obsidian and Reminders-Reminders duplicates
 
+### Automated Sync (macOS)
+
+Schedule obs-sync to run automatically using macOS LaunchAgents:
+
+```bash
+# Configure automation (interactive)
+obs-sync setup --reconfigure
+# Choose "Amend existing configuration"
+# Select "Automation settings (macOS LaunchAgent)"
+```
+
+**Available schedules:**
+- **Hourly** (every 3600 seconds) - Default, recommended
+- **Twice daily** (every 43200 seconds / 12 hours)
+- **Custom interval** - Specify any interval in seconds (60-604800)
+
+**What happens:**
+- LaunchAgent runs `obs-sync sync --apply` on schedule
+- Logs written to `~/Library/Application Support/obs-tools/logs/`
+  - `obs-sync-agent.stdout.log` - Sync output
+  - `obs-sync-agent.stderr.log` - Error messages
+- Calendar imports (if enabled) run once daily during sync
+
+**Managing automation:**
+```bash
+# Enable/disable or change schedule
+obs-sync setup --reconfigure
+# Select option 8 (Automation settings)
+
+# Check LaunchAgent status
+launchctl list | grep obs-sync
+
+# View recent logs
+tail -f ~/Library/Application\ Support/obs-tools/logs/obs-sync-agent.stdout.log
+```
+
+**Important notes:**
+- macOS only - gracefully skipped on other platforms
+- Automation disabled by default - opt-in through setup
+- Agent plist located at `~/Library/LaunchAgents/com.obs-sync.sync-agent.plist`
+- Disabling automation unloads agent and removes plist
+
 ### Custom Configuration
 
 Configuration stored in `~/.config/obs-sync/config.json` (or custom location):
@@ -443,10 +485,16 @@ Location:
 
 ### Configuration Files
 
-- `config.json` - Main configuration (vaults, mappings, settings)
+- `config.json` - Main configuration (vaults, mappings, automation settings)
 - `sync_links.json` - UUID mappings between Obsidian and Reminders tasks
 - `obsidian_tasks_index.json` - Cached Obsidian task index
 - `reminders_tasks_index.json` - Cached Reminders task index
+
+### LaunchAgent Files (macOS)
+
+- `~/Library/LaunchAgents/com.obs-sync.sync-agent.plist` - Automation schedule
+- `~/Library/Application Support/obs-tools/logs/obs-sync-agent.stdout.log` - Automation output
+- `~/Library/Application Support/obs-tools/logs/obs-sync-agent.stderr.log` - Automation errors
 
 ### Logs
 
@@ -536,6 +584,47 @@ rm -rf ~/Library/Application\ Support/obs-tools/venv
 ```bash
 export OBS_TOOLS_HOME=~/custom-sync-location
 ./install.sh --extras macos
+```
+
+### Automation not running (macOS)
+
+**Check LaunchAgent status:**
+```bash
+# Check if agent is loaded
+launchctl list | grep com.obs-sync.sync-agent
+
+# Check recent logs
+tail -50 ~/Library/Application\ Support/obs-tools/logs/obs-sync-agent.stdout.log
+tail -50 ~/Library/Application\ Support/obs-tools/logs/obs-sync-agent.stderr.log
+```
+
+**Common issues:**
+
+1. **Agent not loaded**: Re-enable via `obs-sync setup --reconfigure` → option 8
+2. **Permission errors**: Ensure obs-sync executable is accessible
+   ```bash
+   which obs-sync  # Should return path like ~/.local/bin/obs-sync
+   ```
+3. **Path issues**: LaunchAgent may not have same PATH as your shell
+   - Agent uses: `/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`
+   - Ensure obs-sync is in one of these directories or symlinked to ~/.local/bin
+
+4. **Config/data permissions**: LaunchAgent runs under your user, check file permissions
+   ```bash
+   ls -la ~/.config/obs-sync/
+   ls -la ~/Library/Application\ Support/obs-tools/
+   ```
+
+**Manual agent management:**
+```bash
+# Unload agent
+launchctl unload ~/Library/LaunchAgents/com.obs-sync.sync-agent.plist
+
+# Load agent
+launchctl load ~/Library/LaunchAgents/com.obs-sync.sync-agent.plist
+
+# Remove plist (disables automation)
+rm ~/Library/LaunchAgents/com.obs-sync.sync-agent.plist
 ```
 
 ### Developer Scripts

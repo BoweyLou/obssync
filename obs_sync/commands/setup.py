@@ -399,17 +399,18 @@ class SetupCommand:
         print("  5. Calendar sync settings")
         print("  6. Remove a vault")
         print("  7. Remove a Reminders list")
-        print("  8. All of the above (options 1-5)")
-        print("  9. Cancel")
+        print("  8. Automation settings (macOS LaunchAgent)")
+        print("  9. All of the above (options 1-5, 8)")
+        print("  10. Cancel")
         
         choice = input("\nSelect options (comma-separated, e.g. '1,2' or 'all'): ").strip()
         
-        if choice == '9' or choice.lower() == 'cancel':
+        if choice == '10' or choice.lower() == 'cancel':
             print("\nAmendment cancelled.")
             return True
         
-        if choice == '8' or choice.lower() == 'all':
-            choices = ['1', '2', '3', '4', '5']
+        if choice == '9' or choice.lower() == 'all':
+            choices = ['1', '2', '3', '4', '5', '8']
         else:
             choices = [c.strip() for c in choice.split(',')]
         
@@ -433,6 +434,9 @@ class SetupCommand:
         
         if '7' in choices:
             self._remove_reminders_list()
+        
+        if '8' in choices:
+            self._amend_automation()
         
         print("\n✅ Configuration amendments complete!")
         return True
@@ -544,6 +548,154 @@ class SetupCommand:
                 print("Calendar sync is already disabled")
         else:
             print("⚠️ Invalid choice. No changes made.")
+    
+    def _amend_automation(self) -> None:
+        """Amend automation settings (macOS LaunchAgent)."""
+        from ..utils.launchd import (
+            is_macos, is_agent_loaded, load_agent, unload_agent,
+            install_agent, uninstall_agent, get_obs_sync_executable,
+            describe_interval, get_launchagent_path
+        )
+        from ..core.paths import get_path_manager
+        
+        if not is_macos():
+            print("\n⚠️  Automation via LaunchAgent is only available on macOS.")
+            return
+        
+        # Show current status
+        current_enabled = self.config.automation_enabled
+        current_interval = self.config.automation_interval
+        agent_loaded = is_agent_loaded()
+        
+        print(f"\n🤖 Automation Settings (macOS LaunchAgent)")
+        print(f"  Configuration: {('enabled' if current_enabled else 'disabled')}")
+        print(f"  Schedule: {describe_interval(current_interval)}")
+        print(f"  LaunchAgent: {('loaded' if agent_loaded else 'not loaded')}")
+        
+        if agent_loaded and not current_enabled:
+            print("\n⚠️  LaunchAgent is loaded but config shows disabled - they're out of sync")
+        elif not agent_loaded and current_enabled:
+            print("\n⚠️  Config shows enabled but LaunchAgent is not loaded - they're out of sync")
+        
+        # Prompt for enable/disable
+        print("\nAutomation runs 'obs-sync sync --apply' on a schedule.")
+        action = "disable" if current_enabled else "enable"
+        default_choice = "n" if current_enabled else "y"
+        
+        choice = input(f"Would you like to {action} automation? (y/n) [default: {default_choice}]: ").strip().lower()
+        
+        if not choice:
+            choice = default_choice
+        
+        if choice == 'n':
+            if current_enabled or agent_loaded:
+                # Disable automation
+                print("\n🛑 Disabling automation...")
+                
+                if agent_loaded:
+                    success, error = unload_agent()
+                    if success:
+                        print("  ✓ LaunchAgent unloaded")
+                    else:
+                        print(f"  ⚠️  Failed to unload LaunchAgent: {error}")
+                
+                plist_path = get_launchagent_path()
+                if plist_path.exists():
+                    success, error = uninstall_agent()
+                    if success:
+                        print(f"  ✓ Removed LaunchAgent plist: {plist_path}")
+                    else:
+                        print(f"  ⚠️  Failed to remove plist: {error}")
+                
+                self.config.automation_enabled = False
+                print("  ✓ Automation disabled in configuration")
+            else:
+                print("Automation is already disabled")
+            return
+        
+        elif choice != 'y':
+            print("⚠️ Invalid choice. No changes made.")
+            return
+        
+        # User wants to enable automation
+        print("\n⚙️  Configuring automation schedule...")
+        print("\nAvailable schedules:")
+        print("  1. Hourly (every 3600 seconds) [recommended]")
+        print("  2. Twice daily (every 43200 seconds / 12 hours)")
+        print("  3. Custom interval (specify seconds)")
+        
+        schedule_choice = input("Choose schedule [1]: ").strip()
+        
+        if not schedule_choice or schedule_choice == '1':
+            interval = 3600  # Hourly
+        elif schedule_choice == '2':
+            interval = 43200  # Twice daily
+        elif schedule_choice == '3':
+            custom_input = input("Enter interval in seconds: ").strip()
+            try:
+                interval = int(custom_input)
+                if interval < 60:
+                    print("⚠️  Minimum interval is 60 seconds. Using 60.")
+                    interval = 60
+                elif interval > 604800:  # 1 week
+                    print("⚠️  Maximum interval is 604800 seconds (1 week). Using 604800.")
+                    interval = 604800
+            except ValueError:
+                print("⚠️  Invalid interval. Using default (3600 seconds).")
+                interval = 3600
+        else:
+            print("⚠️  Invalid choice. Using default (hourly).")
+            interval = 3600
+        
+        print(f"\n  Selected: {describe_interval(interval)}")
+        
+        # Find obs-sync executable
+        obs_sync_path = get_obs_sync_executable()
+        if not obs_sync_path:
+            print("\n⚠️  Could not find obs-sync executable.")
+            print("Please ensure obs-sync is installed and in your PATH.")
+            return
+        
+        print(f"  Using executable: {obs_sync_path}")
+        
+        # Get log directory
+        path_manager = get_path_manager()
+        log_dir = path_manager.log_dir
+        
+        # Unload existing agent if loaded
+        if agent_loaded:
+            print("\n  Unloading existing LaunchAgent...")
+            success, error = unload_agent()
+            if not success:
+                print(f"  ⚠️  Warning: Failed to unload existing agent: {error}")
+        
+        # Install the LaunchAgent plist
+        print("\n  Installing LaunchAgent...")
+        success, error = install_agent(interval, obs_sync_path, log_dir)
+        
+        if not success:
+            print(f"  ✗ Failed to install LaunchAgent: {error}")
+            return
+        
+        print(f"  ✓ LaunchAgent plist created: {get_launchagent_path()}")
+        
+        # Load the agent
+        print("  Loading LaunchAgent...")
+        success, error = load_agent()
+        
+        if not success:
+            print(f"  ✗ Failed to load LaunchAgent: {error}")
+            return
+        
+        print("  ✓ LaunchAgent loaded and scheduled")
+        
+        # Update config
+        self.config.automation_enabled = True
+        self.config.automation_interval = interval
+        
+        print(f"\n✅ Automation enabled! obs-sync will run {describe_interval(interval)}")
+        print(f"   Logs: {log_dir}/obs-sync-agent.stdout.log")
+        print(f"         {log_dir}/obs-sync-agent.stderr.log")
     
     def _continue_full_setup(self) -> bool:
         """Continue with the original full setup flow after reset choice."""

@@ -9,6 +9,11 @@ from .prompts import (
     format_task_for_display, display_duplicate_cluster,
     confirm_deduplication, prompt_for_keeps, show_deduplication_summary
 )
+from .launchd import (
+    is_macos, get_launchagent_path, install_agent, uninstall_agent,
+    load_agent, unload_agent, is_agent_loaded, get_obs_sync_executable,
+    describe_interval
+)
 
 __all__ = [
     # I/O utilities
@@ -27,5 +32,15 @@ __all__ = [
     'display_duplicate_cluster',
     'confirm_deduplication',
     'prompt_for_keeps',
-    'show_deduplication_summary'
+    'show_deduplication_summary',
+    # LaunchAgent utilities (macOS)
+    'is_macos',
+    'get_launchagent_path',
+    'install_agent',
+    'uninstall_agent',
+    'load_agent',
+    'unload_agent',
+    'is_agent_loaded',
+    'get_obs_sync_executable',
+    'describe_interval'
 ]

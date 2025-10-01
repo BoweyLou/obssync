@@ -376,6 +376,9 @@ class SyncConfig:
     dedup_auto_apply: bool = False
     # Calendar integration settings
     sync_calendar_events: bool = False
+    # Automation settings (macOS LaunchAgent)
+    automation_enabled: bool = False
+    automation_interval: int = 3600  # Default: hourly
 
     def __post_init__(self) -> None:
         # Get the path manager
@@ -859,6 +862,8 @@ class SyncConfig:
                 "obsidian_inbox_path", data.get("obsidian_inbox_path", "AppleRemindersInbox.md")
             ),
             sync_calendar_events=sync_settings.get("sync_calendar_events", False),
+            automation_enabled=sync_settings.get("automation_enabled", False),
+            automation_interval=sync_settings.get("automation_interval", 3600),
             obsidian_index_path=paths.get(
                 "obsidian_index", data.get("obsidian_index_path", None)
             ),
@@ -921,6 +926,8 @@ class SyncConfig:
                 "include_completed": self.include_completed,
                 "obsidian_inbox_path": self.obsidian_inbox_path,
                 "sync_calendar_events": self.sync_calendar_events,
+                "automation_enabled": self.automation_enabled,
+                "automation_interval": self.automation_interval,
             },
             "paths": {
                 "obsidian_index": self.obsidian_index_path,
