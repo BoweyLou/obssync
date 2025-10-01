@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# obs-sync - Main entry point for new architecture
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+
+# Route all commands through new architecture
+exec python3 "$SCRIPT_DIR/obs_tools.py" "$@"
