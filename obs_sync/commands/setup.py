@@ -48,6 +48,13 @@ class SetupCommand:
         if reconfigure and self.config.vaults:
             return self._handle_reconfigure_choice()
 
+        # Store existing vault IDs so we can preserve stable identifiers when reselecting vault paths
+        existing_vault_ids = {}
+        if self.config.vaults:
+            for vault in self.config.vaults:
+                normalized_path = self._normalize_path(vault.path)
+                existing_vault_ids[normalized_path] = vault.vault_id
+
         # Discover vaults
         print("\n🔍 Searching for Obsidian vaults...")
         vaults = self._discover_vaults()
