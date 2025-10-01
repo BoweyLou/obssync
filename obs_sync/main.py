@@ -17,7 +17,8 @@ from obs_sync.commands import (
     SyncCommand,
     CalendarCommand,
     InstallDepsCommand,
-    MigrateCommand
+    MigrateCommand,
+    UpdateCommand
 )
 
 
@@ -33,6 +34,7 @@ Examples:
   obs-sync sync                   # Run sync (dry-run by default)
   obs-sync sync --apply           # Apply sync changes
   obs-sync calendar               # Sync calendar events to daily note
+  obs-sync update                 # Update to latest version
         """
     )
     
@@ -120,6 +122,13 @@ Examples:
         help='Show what would be done without making changes'
     )
     
+    # Update command
+    update_parser = subparsers.add_parser('update', help='Update obs-sync to latest version')
+    update_parser.add_argument(
+        '--extras',
+        help='Extras to install (e.g., "macos,optimization"). Default: "macos" on macOS'
+    )
+    
     # Migrate command
     migrate_parser = subparsers.add_parser(
         'migrate',
@@ -192,6 +201,10 @@ Examples:
         elif args.command == 'calendar':
             cmd = CalendarCommand(config, verbose=args.verbose)
             success = cmd.run(date_str=args.date, dry_run=args.dry_run)
+            
+        elif args.command == 'update':
+            cmd = UpdateCommand(config, verbose=args.verbose)
+            success = cmd.run(extras=args.extras)
             
         elif args.command == 'migrate':
             # Migrate command doesn't need config

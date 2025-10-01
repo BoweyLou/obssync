@@ -169,6 +169,65 @@ obs-sync --help
 
 You should see the command help menu. You're ready to go! 🎉
 
+### Updating obs-sync
+
+**Quick update (recommended):**
+
+```bash
+obs-sync update
+```
+
+This command automatically:
+- ✅ Checks for available updates
+- ✅ Pulls latest changes from git
+- ✅ Reinstalls dependencies
+- ✅ Prompts to refresh LaunchAgent if automation is enabled
+
+**Manual update:**
+
+If you prefer manual control:
+
+```bash
+# Navigate to the repo directory
+cd /path/to/obssync
+
+# Pull latest changes
+git pull
+
+# Reinstall dependencies if new extras were added
+./install.sh --extras macos
+```
+
+**Important for LaunchAgent automation users:**
+
+If you have automation enabled and the update includes LaunchAgent changes, refresh your agent:
+
+```bash
+# After updating, reconfigure automation to pick up new plist format
+obs-sync setup --reconfigure
+# Select option 8 (Automation settings)
+# Choose 'n' to disable, then 'y' to re-enable with new settings
+```
+
+**What happens during update:**
+- ✅ **Code changes** - Immediately active (editable install)
+- ✅ **New dependencies** - Installed via `./install.sh`
+- ✅ **Config schema changes** - Backward compatible, defaults applied
+- ⚠️ **LaunchAgent changes** - Require manual refresh (see above)
+
+**Update options:**
+
+```bash
+# Update with default extras (macos on macOS)
+obs-sync update
+
+# Update with specific extras
+obs-sync update --extras macos,optimization
+
+# Check current version
+cd /path/to/obssync && git log -1 --oneline
+```
+
 ---
 
 ## Quick Start

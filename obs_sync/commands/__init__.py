@@ -7,11 +7,13 @@ from .sync import SyncCommand
 from .calendar import CalendarCommand
 from .install_deps import InstallDepsCommand
 from .migrate import MigrateCommand
+from .update import UpdateCommand
 
 __all__ = [
     'SetupCommand',
     'SyncCommand',
     'CalendarCommand',
     'InstallDepsCommand',
-    'MigrateCommand'
+    'MigrateCommand',
+    'UpdateCommand'
 ]
