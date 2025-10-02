@@ -54,7 +54,7 @@ def generate_plist(
         "Label": AGENT_LABEL,
         "ProgramArguments": [obs_sync_path, "sync", "--apply"],
         "StartInterval": interval_seconds,
-        "RunAtLoad": False,  # Don't run immediately on login
+        "RunAtLoad": True,  # Run immediately after loading and then follow the interval
         "StandardOutPath": str(stdout_log),
         "StandardErrorPath": str(stderr_log),
         "EnvironmentVariables": {
