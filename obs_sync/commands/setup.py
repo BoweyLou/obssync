@@ -31,6 +31,7 @@ class SetupCommand:
             add = False
 
         if add:
+            print("\nℹ️  '--add' is deprecated. Use '--reconfigure' and choose the new add options instead.")
             if not self.config.vaults:
                 print("\nNo existing configuration found. Running full setup instead.")
                 return self._run_full_setup(reconfigure=True)
@@ -397,55 +398,56 @@ class SetupCommand:
             default_marker = " (default)" if lst.identifier == self.config.default_calendar_id else ""
             print(f"  • {lst.name}{default_marker}")
         
-        # Option to change defaults
         print("\n📝 What would you like to modify?")
-        print("  1. Vault to List mappings")
-        print("  2. Tag routing rules")
-        print("  3. Default vault")
-        print("  4. Default Reminders list")
-        print("  5. Calendar sync settings")
-        print("  6. Remove a vault")
-        print("  7. Remove a Reminders list")
-        print("  8. Automation settings (macOS LaunchAgent)")
-        print("  9. All of the above (options 1-5, 8)")
-        print("  10. Cancel")
-        
+        menu_options = [
+            ("1", "Vault to List mappings", self._amend_vault_mappings),
+            ("2", "Tag routing rules", self._amend_tag_routes),
+            ("3", "Default vault", self._amend_default_vault),
+            ("4", "Default Reminders list", self._amend_default_list),
+            ("5", "Calendar sync settings", self._amend_calendar_sync),
+            ("6", "Add a new vault", self._add_new_vaults_option),
+            ("7", "Add a new Reminders list", self._add_new_reminders_option),
+            ("8", "Remove a vault", self._remove_vault),
+            ("9", "Remove a Reminders list", self._remove_reminders_list),
+            ("10", "Automation settings (macOS LaunchAgent)", self._amend_automation),
+        ]
+
+        for key, label, _ in menu_options:
+            print(f"  {key}. {label}")
+        print("  11. All of the above (options 1-5, 10)")
+        print("  12. Cancel")
+
         choice = input("\nSelect options (comma-separated, e.g. '1,2' or 'all'): ").strip()
-        
-        if choice == '10' or choice.lower() == 'cancel':
+        if not choice:
+            print("\nNo amendments were applied.")
+            return True
+
+        lower_choice = choice.lower()
+        if lower_choice == 'cancel' or choice == '12':
             print("\nAmendment cancelled.")
             return True
-        
-        if choice == '9' or choice.lower() == 'all':
-            choices = ['1', '2', '3', '4', '5', '8']
+
+        if lower_choice == 'all' or choice == '11':
+            selected_keys = ['1', '2', '3', '4', '5', '10']
         else:
-            choices = [c.strip() for c in choice.split(',')]
-        
-        if '1' in choices:
-            self._amend_vault_mappings()
-        
-        if '2' in choices:
-            self._amend_tag_routes()
-        
-        if '3' in choices:
-            self._amend_default_vault()
-        
-        if '4' in choices:
-            self._amend_default_list()
-        
-        if '5' in choices:
-            self._amend_calendar_sync()
-        
-        if '6' in choices:
-            self._remove_vault()
-        
-        if '7' in choices:
-            self._remove_reminders_list()
-        
-        if '8' in choices:
-            self._amend_automation()
-        
-        print("\n✅ Configuration amendments complete!")
+            selected_keys = [c.strip() for c in choice.split(',') if c.strip()]
+
+        option_map = {key: handler for key, _, handler in menu_options}
+
+        executed = False
+        for key in selected_keys:
+            action = option_map.get(key)
+            if action:
+                action()
+                executed = True
+            else:
+                print(f"\n⚠️  Unknown option '{key}'. Skipping.")
+
+        if executed:
+            print("\n✅ Configuration amendments complete!")
+        else:
+            print("\nNo amendments were applied.")
+
         return True
     
     def _amend_vault_mappings(self) -> None:
@@ -878,6 +880,125 @@ class SetupCommand:
 
         return True
     
+    def _apply_new_vaults(self, new_vaults: List[Vault]) -> bool:
+        """Apply new vaults to the configuration and prompt for list mappings."""
+        if not new_vaults:
+            return False
+
+        self.config.vaults.extend(new_vaults)
+        self._handle_default_vault_change(new_vaults)
+
+        if not self.config.reminders_lists:
+            print("\n⚠️  No Reminders lists configured yet; map vaults later as needed.")
+            return True
+
+        print("\n🔗 Map new vaults to Reminders lists:")
+        for vault in new_vaults:
+            print(f"\nVault: {vault.name}")
+            print("Available lists:")
+            for i, lst in enumerate(self.config.reminders_lists, 1):
+                print(f"  {i}. {lst.name}")
+
+            choice_input = input("Select list for this vault [1]: ").strip()
+            choice = 1
+            if choice_input:
+                try:
+                    choice = int(choice_input)
+                except ValueError:
+                    choice = 1
+
+            if 1 <= choice <= len(self.config.reminders_lists):
+                selected_list = self.config.reminders_lists[choice - 1]
+                print(f"  ✓ Mapped to: {selected_list.name}")
+            else:
+                selected_list = self.config.reminders_lists[0]
+                print(f"  ✓ Mapped to: {selected_list.name} (default)")
+
+            self.config.set_vault_mapping(vault.vault_id, selected_list.identifier)
+            self._configure_tag_routes(vault)
+
+        return True
+
+    def _review_mappings_for_new_lists(self, new_lists: List[RemindersList]) -> None:
+        """Optionally remap existing vaults after new lists are added."""
+        if not new_lists or not self.config.vaults:
+            return
+
+        print("\n🔗 Update vault mappings with new lists?")
+        response = input("Review vault mappings? (y/n) [n]: ").strip().lower()
+        if response != 'y':
+            return
+
+        for vault in self.config.vaults:
+            current_mapping = self.config.get_vault_mapping(vault.vault_id)
+            current_list_name = "None"
+            if current_mapping:
+                for lst in self.config.reminders_lists:
+                    if lst.identifier == current_mapping:
+                        current_list_name = lst.name
+                        break
+
+            print(f"\nVault: {vault.name} (currently mapped to: {current_list_name})")
+            print("Available lists:")
+            for i, lst in enumerate(self.config.reminders_lists, 1):
+                marker = " (current)" if lst.identifier == current_mapping else ""
+                print(f"  {i}. {lst.name}{marker}")
+
+            print("Press Enter to keep current, or select new list:")
+            choice_input = input("Choice: ").strip()
+
+            if choice_input:
+                try:
+                    choice = int(choice_input)
+                    if 1 <= choice <= len(self.config.reminders_lists):
+                        selected_list = self.config.reminders_lists[choice - 1]
+                        self.config.set_vault_mapping(vault.vault_id, selected_list.identifier)
+                        print(f"  ✓ Updated mapping to: {selected_list.name}")
+                except ValueError:
+                    pass
+
+            self._configure_tag_routes(vault)
+
+    def _apply_new_lists(
+        self,
+        new_lists: List[RemindersList],
+        *,
+        prompt_for_mapping: bool = True,
+        refresh_calendar_ids: bool = True,
+    ) -> bool:
+        """Apply new Reminders lists to the configuration."""
+        if not new_lists:
+            return False
+
+        self.config.reminders_lists.extend(new_lists)
+        self._handle_default_calendar_change(new_lists)
+
+        if prompt_for_mapping:
+            self._review_mappings_for_new_lists(new_lists)
+
+        if refresh_calendar_ids:
+            self._refresh_calendar_ids()
+
+        return True
+
+    def _add_new_vaults_option(self) -> None:
+        """Interactive flow for adding vaults during reconfigure."""
+        print("\n➕ Add New Vault")
+        new_vaults = self._collect_additional_vaults()
+        if self._apply_new_vaults(new_vaults):
+            print("\n✅ Vault configuration updated.")
+        else:
+            print("\nNo new vaults were added.")
+
+    def _add_new_reminders_option(self) -> None:
+        """Interactive flow for adding Reminders lists during reconfigure."""
+        print("\n➕ Add New Reminders List")
+        new_lists = self._collect_additional_lists()
+        if self._apply_new_lists(new_lists, prompt_for_mapping=True):
+            print("\n✅ Reminders configuration updated.")
+        else:
+            print("\nNo new Reminders lists were added.")
+
     def _run_additional_flow(self) -> bool:
         """Add additional vaults and reminders lists without full reset."""
         print("\n➕ Add additional vaults or Reminders lists")
@@ -889,85 +1010,22 @@ class SetupCommand:
             print("\nNo changes requested. Existing configuration unchanged.")
             return True
 
-        # Add new lists to config FIRST so they're available for vault mapping
-        if new_lists:
-            self.config.reminders_lists.extend(new_lists)
-            self._handle_default_calendar_change(new_lists)
+        lists_added = self._apply_new_lists(
+            new_lists,
+            prompt_for_mapping=False,
+            refresh_calendar_ids=False,
+        )
+        vaults_added = self._apply_new_vaults(new_vaults)
 
-        if new_vaults:
-            self.config.vaults.extend(new_vaults)
-            self._handle_default_vault_change(new_vaults)
+        if lists_added:
+            self._review_mappings_for_new_lists(new_lists)
 
-            # Set up mappings for new vaults (now includes newly added lists)
-            if self.config.reminders_lists:
-                print("\n🔗 Map new vaults to Reminders lists:")
-                for vault in new_vaults:
-                    print(f"\nVault: {vault.name}")
-                    print("Available lists:")
-                    for i, lst in enumerate(self.config.reminders_lists, 1):
-                        print(f"  {i}. {lst.name}")
+        if lists_added or vaults_added:
+            self._refresh_calendar_ids()
+            print("\n✅ Additional configuration updated.")
+        else:
+            print("\nNo changes requested. Existing configuration unchanged.")
 
-                    choice_input = input(f"Select list for this vault [1]: ").strip()
-                    choice = 1
-                    if choice_input:
-                        try:
-                            choice = int(choice_input)
-                        except ValueError:
-                            pass
-
-                    if 1 <= choice <= len(self.config.reminders_lists):
-                        selected_list = self.config.reminders_lists[choice - 1]
-                        self.config.set_vault_mapping(vault.vault_id, selected_list.identifier)
-                        print(f"  ✓ Mapped to: {selected_list.name}")
-                    else:
-                        # Default to first list
-                        selected_list = self.config.reminders_lists[0]
-                        self.config.set_vault_mapping(vault.vault_id, selected_list.identifier)
-                        print(f"  ✓ Mapped to: {selected_list.name} (default)")
-
-                    self._configure_tag_routes(vault)
-
-        # Handle optional vault remapping for new lists (only if both new lists exist and vaults exist)
-        if new_lists:
-
-            # Optionally update vault mappings for new lists
-            if self.config.vaults and new_lists:
-                print("\n🔗 Update vault mappings with new lists?")
-                response = input("Review vault mappings? (y/n) [n]: ").strip().lower()
-                if response == 'y':
-                    for vault in self.config.vaults:
-                        current_mapping = self.config.get_vault_mapping(vault.vault_id)
-                        current_list_name = "None"
-                        if current_mapping:
-                            for lst in self.config.reminders_lists:
-                                if lst.identifier == current_mapping:
-                                    current_list_name = lst.name
-                                    break
-
-                        print(f"\nVault: {vault.name} (currently mapped to: {current_list_name})")
-                        print("Available lists:")
-                        for i, lst in enumerate(self.config.reminders_lists, 1):
-                            marker = " (current)" if lst.identifier == current_mapping else ""
-                            print(f"  {i}. {lst.name}{marker}")
-
-                        print("Press Enter to keep current, or select new list:")
-                        choice_input = input("Choice: ").strip()
-
-                        if choice_input:
-                            try:
-                                choice = int(choice_input)
-                                if 1 <= choice <= len(self.config.reminders_lists):
-                                    selected_list = self.config.reminders_lists[choice - 1]
-                                    self.config.set_vault_mapping(vault.vault_id, selected_list.identifier)
-                                    print(f"  ✓ Updated mapping to: {selected_list.name}")
-                            except ValueError:
-                                pass
-
-                        self._configure_tag_routes(vault)
-
-        self._refresh_calendar_ids()
-
-        print("\n✅ Additional configuration updated.")
         return True
 
     def _collect_additional_vaults(self) -> List[Vault]:

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Test script to verify the --add setup flow fix works correctly and test
-the new amend functionality for --reconfigure.
-This simulates the scenario where new Reminders lists should be available
-when mapping new vaults.
+Test script to verify the setup addition flows work correctly through
+`setup --reconfigure` and its amend options. This simulates the scenario
+where new Reminders lists should be available when mapping new vaults.
 """
 
 import sys

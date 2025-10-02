@@ -95,7 +95,7 @@ Comprehensive test coverage in `test_tag_sync.py`:
 ### Configuration
 
 Tags can be configured to route tasks to specific Reminders lists during setup:
-- During `obs-setup --reconfigure` or `obs-setup --add`
+- During `obs-setup --reconfigure` (use the amend menu to add vaults or lists)
 - Map tags like `#urgent` → Work list, `#personal` → Personal list
 - First matching tag determines the destination list
 - Tasks without matching tags use the vault's default list

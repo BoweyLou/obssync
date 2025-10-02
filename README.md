@@ -70,9 +70,9 @@ Keep your Obsidian task lists in perfect sync with Apple Reminders. Work in your
 ### 🏷️ Tag-Based Routing
 Route tasks to specific Reminders lists based on Obsidian tags:
 ```markdown
-- [ ] Review quarterly goals #work
-- [ ] Buy groceries #personal
-- [ ] Research paper outline #research
+- [x] Review quarterly goals #work ^sjlsvmgj
+- [x] Buy groceries #personal ^ronkeahi
+- [x] Research paper outline #research ^bt6cidyc
 ```
 Each tag can automatically route to its designated Reminders list.
 
@@ -312,7 +312,7 @@ Just run the sync command whenever you want to synchronise:
 obs-sync sync --apply
 ```
 
-**Pro tip**: On macOS, enable built-in automation via `obs-sync setup --reconfigure` (option 8) to schedule automatic syncing.
+**Pro tip**: On macOS, enable built-in automation via `obs-sync setup --reconfigure` (choose "Automation settings") to schedule automatic syncing.
 
 ---
 
@@ -326,10 +326,7 @@ obs-sync sync --apply
 # Initial setup (interactive wizard)
 obs-sync setup
 
-# Add more vaults or Reminders lists
-obs-sync setup --add
-
-# Reconfigure existing settings
+# Update configuration (add/remove vaults or lists, adjust routes)
 obs-sync setup --reconfigure
 ```
 
@@ -366,12 +363,12 @@ obs-sync recognises standard Obsidian task syntax:
 ```markdown
 ## My Tasks
 
-- [ ] Basic task
+- [x] Basic task ^dol2xsgo
 - [x] Completed task
-- [ ] Task with due date 📅 2024-10-15
-- [ ] High priority task ⏫
-- [ ] Task with tags #work #urgent
-- [ ] Task with note
+- [x] Task with due date 📅 2024-10-15 ^bqfydgq2
+- [x] High priority task ⏫ ^6h67ikgt
+- [x] Task with tags #work #urgent ^5lqcfwno
+- [x] Task with note ^lz3c75ps
   Additional details go here in the indented block.
 ```
 
@@ -403,9 +400,9 @@ obs-sync setup --reconfigure
 
 **In practice:**
 ```markdown
-- [ ] Prepare presentation #work         → Work list
-- [ ] Buy birthday gift #personal        → Personal list
-- [ ] Review contract ASAP #work #urgent → Work list (first match wins)
+- [x] Prepare presentation          → Work list #work ^j5bsndsm
+- [x] Buy birthday gift         → Personal list #personal ^rb4t5swv
+- [x] Review contract ASAP   → Work list (first match wins) #work #urgent ^cgpp3gs4
 ```
 
 ### Multi-Vault Workflows
@@ -413,8 +410,8 @@ obs-sync setup --reconfigure
 Manage different projects in separate vaults:
 
 ```bash
-# Setup multiple vaults
-obs-sync setup --add
+# Setup multiple vaults (choose "Add a new vault" from the amend menu)
+obs-sync setup --reconfigure
 
 # Sync specific vault
 obs-sync sync --vault "Project A" --apply

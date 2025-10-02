@@ -14,6 +14,7 @@ from .launchd import (
     load_agent, unload_agent, is_agent_loaded, get_obs_sync_executable,
     describe_interval
 )
+from .macos import set_process_name
 
 __all__ = [
     # I/O utilities
@@ -42,5 +43,7 @@ __all__ = [
     'unload_agent',
     'is_agent_loaded',
     'get_obs_sync_executable',
-    'describe_interval'
+    'describe_interval',
+    # macOS helpers
+    'set_process_name'
 ]

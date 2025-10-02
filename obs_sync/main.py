@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from obs_sync.core import SyncConfig
+from obs_sync.utils.macos import set_process_name
 from obs_sync.core.config import load_config, save_config, get_default_config_path
 from obs_sync.commands import (
     SetupCommand,
@@ -24,6 +25,8 @@ from obs_sync.commands import (
 
 def main(argv=None):
     """Main entry point for obs-sync."""
+    set_process_name("obs-sync")
+
     parser = argparse.ArgumentParser(
         description="Bidirectional task sync between Obsidian and Apple Reminders",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -65,7 +68,7 @@ Examples:
     setup_parser.add_argument(
         '--add',
         action='store_true',
-        help='Add vaults or Reminders lists without re-running full setup'
+        help='Add vaults or Reminders lists without re-running full setup (deprecated; use --reconfigure)'
     )
     
     # Install dependencies command
