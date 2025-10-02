@@ -420,13 +420,36 @@ def sync_command(
                     print(f"  {tag}:")
                     for list_name, count in stats.items():
                         print(f"    → {list_name}: {count} task(s)")
+            
+            # Display verbose Reminders → Obsidian creation details if in verbose mode
+            if logger.isEnabledFor(logging.DEBUG) and 'rem_to_obs_creations' in results:
+                rem_to_obs_creations = results['rem_to_obs_creations']
+                if rem_to_obs_creations:
+                    action = "to create" if dry_run else "created"
+                    print(f"\n📥 Obsidian tasks {action} from Reminders:")
+                    
+                    # Group creations by list name
+                    by_list = {}
+                    for creation in rem_to_obs_creations:
+                        list_name = creation.get('list_name', 'Unknown')
+                        if list_name not in by_list:
+                            by_list[list_name] = []
+                        by_list[list_name].append(creation)
+                    
+                    # Display grouped by list
+                    for list_name, creations in sorted(by_list.items()):
+                        print(f"  From {list_name}:")
+                        for creation in creations:
+                            title = creation.get('title', 'Untitled')
+                            calendar_id = creation.get('calendar_id', 'N/A')
+                            print(f"    • '{title}' (calendar_id: {calendar_id})")
 
-        changes = results["changes"]
+        changes = results.get("changes", {})
         has_changes = any([
-            changes["obs_updated"],
-            changes["rem_updated"],
-            changes["obs_created"],
-            changes["rem_created"],
+            changes.get("obs_updated", 0),
+            changes.get("rem_updated", 0),
+            changes.get("obs_created", 0),
+            changes.get("rem_created", 0),
             changes.get("obs_deleted", 0),
             changes.get("rem_deleted", 0),
         ])
@@ -434,23 +457,23 @@ def sync_command(
         if show_summary:
             if has_changes:
                 print(f"\nChanges {'to make' if dry_run else 'made'}:")
-                if changes["obs_updated"]:
+                if changes.get("obs_updated", 0):
                     print(f"  Obsidian updates: {changes['obs_updated']}")
-                if changes["rem_updated"]:
+                if changes.get("rem_updated", 0):
                     print(f"  Reminders updates: {changes['rem_updated']}")
-                if changes["obs_created"]:
+                if changes.get("obs_created", 0):
                     print(f"  Obsidian creations: {changes['obs_created']}")
-                if changes["rem_created"]:
+                if changes.get("rem_created", 0):
                     print(f"  Reminders creations: {changes['rem_created']}")
                 if changes.get("obs_deleted", 0):
                     print(f"  Obsidian deletions: {changes['obs_deleted']}")
                 if changes.get("rem_deleted", 0):
                     print(f"  Reminders deletions: {changes['rem_deleted']}")
-                if changes["links_created"]:
+                if changes.get("links_created", 0):
                     print(f"  New sync links: {changes['links_created']}")
                 if changes.get("links_deleted", 0):
                     print(f"  Removed sync links: {changes['links_deleted']}")
-                if changes["conflicts_resolved"]:
+                if changes.get("conflicts_resolved", 0):
                     print(f"  Conflicts resolved: {changes['conflicts_resolved']}")
             else:
                 print("\nNo changes needed - everything is in sync!")

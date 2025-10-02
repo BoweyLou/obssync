@@ -63,6 +63,9 @@ class SyncEngine:
         self.created_obs_task_ids: Set[str] = set()
         self.created_rem_task_ids: Set[str] = set()
         
+        # Track metadata for Reminders → Obsidian creations (for verbose output)
+        self.rem_to_obs_creations: List[Dict[str, Any]] = []
+        
         # Store vault path and config for task creation
         self.vault_path = None
         self.vault_id = None
@@ -146,6 +149,7 @@ class SyncEngine:
         }
         self.created_obs_task_ids = set()
         self.created_rem_task_ids = set()
+        self.rem_to_obs_creations = []
         
         # Store vault path for creation operations
         self.vault_path = vault_path
@@ -508,6 +512,7 @@ class SyncEngine:
             'tag_summary': tag_summary,
             'created_obs_tasks': list(self.created_obs_task_ids),
             'created_rem_tasks': list(self.created_rem_task_ids),
+            'rem_to_obs_creations': self.rem_to_obs_creations,
             'dry_run': dry_run
         }
     
@@ -796,7 +801,14 @@ class SyncEngine:
         # Create Obsidian tasks for unmatched Reminders tasks
         if self.direction in ("both", "rem-to-obs") and unmatched_rem:
             for rem_task in unmatched_rem:
-                self.logger.debug(f"Creating Obsidian task for: {rem_task.title}")
+                list_name = self._get_list_name(rem_task.calendar_id)
+                self.logger.debug(
+                    "Creating Obsidian task for '%s' from Reminders list '%s' (calendar_id=%s, rem_uuid=%s)",
+                    rem_task.title,
+                    list_name,
+                    rem_task.calendar_id,
+                    rem_task.uuid,
+                )
 
                 route_tag = self._get_route_tag_for_calendar(rem_task.calendar_id)
                 obs_tags = list(rem_task.tags) if rem_task.tags else []
@@ -827,6 +839,15 @@ class SyncEngine:
                     modified_at=datetime.now(timezone.utc).isoformat(),
                 )
                 
+                # Track metadata for verbose output
+                creation_metadata = {
+                    "title": rem_task.title,
+                    "rem_uuid": rem_task.uuid,
+                    "list_name": list_name,
+                    "calendar_id": rem_task.calendar_id,
+                    "obs_uuid": None,  # Will be set after creation if not dry_run
+                }
+                
                 if not dry_run:
                     # Actually create the task
                     created_task = self.obs_manager.create_task(
@@ -835,6 +856,7 @@ class SyncEngine:
                     if created_task:
                         created_obs_tasks.append(created_task)
                         self.created_obs_task_ids.add(created_task.uuid)
+                        creation_metadata["obs_uuid"] = created_task.uuid
                         # Create a link for the new pair
                         link = SyncLink(
                             obs_uuid=created_task.uuid,
@@ -844,6 +866,11 @@ class SyncEngine:
                             last_synced=datetime.now(timezone.utc).isoformat(),
                         )
                         new_links.append(link)
+                else:
+                    # In dry run, use the planned obs_task UUID
+                    creation_metadata["obs_uuid"] = obs_task.uuid
+                
+                self.rem_to_obs_creations.append(creation_metadata)
                 
                 # Count both actual and planned creations
                 self.changes_made["obs_created"] += 1
