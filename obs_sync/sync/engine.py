@@ -147,6 +147,7 @@ class SyncEngine:
             "links_deleted": 0,
             "conflicts_resolved": 0,
         }
+        self.skipped_rem_count = 0
         self.created_obs_task_ids = set()
         self.created_rem_task_ids = set()
         self.rem_to_obs_creations = []
@@ -319,6 +320,46 @@ class SyncEngine:
         self.logger.info(f"Found {len(unmatched_obs_all)} total unmatched Obsidian tasks ({len(unmatched_obs)} active)")
         self.logger.info(f"Found {len(unmatched_rem_all)} total unmatched Reminders tasks ({len(unmatched_rem)} active)")
         
+        # Filter unmatched_rem based on tag route import modes
+        filtered_rem = []
+        if self.sync_config and self.vault_id:
+            existing_link_rem_uuids = {link.rem_uuid for link in existing_links if link.vault_id == self.vault_id}
+            for rem_task in unmatched_rem:
+                # Find which route applies to this task based on calendar
+                route_applies = False
+                import_mode = None
+                
+                for route in self.sync_config.get_tag_routes_for_vault(self.vault_id):
+                    route_calendar = route.get("calendar_id")
+                    
+                    # A route applies if the task is in the routed calendar
+                    if route_calendar == rem_task.calendar_id:
+                        route_applies = True
+                        import_mode = route.get("import_mode", "existing_only")
+                        break
+                
+                if route_applies and import_mode == "existing_only":
+                    # Only include if already linked to this vault
+                    if rem_task.uuid in existing_link_rem_uuids:
+                        filtered_rem.append(rem_task)
+                        self.logger.debug(
+                            f"Including '{rem_task.title}' - existing_only mode but already linked to vault"
+                        )
+                    else:
+                        self.skipped_rem_count += 1
+                        self.logger.debug(
+                            f"Skipping '{rem_task.title}' - existing_only mode and no existing link"
+                        )
+                else:
+                    # No route applies or full_import mode - include it
+                    filtered_rem.append(rem_task)
+            
+            unmatched_rem = filtered_rem
+            if self.skipped_rem_count > 0:
+                self.logger.info(
+                    f"Filtered {self.skipped_rem_count} Reminders tasks due to existing_only import mode"
+                )
+        
         # 4. Create counterpart tasks for unmatched items
         new_links, created_obs_tasks, created_rem_tasks = self._create_counterparts(
             unmatched_obs,
@@ -440,7 +481,11 @@ class SyncEngine:
                     vault_routes = self.sync_config.get_tag_routes_for_vault(self.vault_id)
                     if vault_routes:
                         routing_tags = {route['tag'] for route in vault_routes}
-                        has_routing_tag = any(tag in routing_tags for tag in obs_task.tags)
+                        normalized_obs_tags = {
+                            SyncConfig._normalize_tag_value(t)
+                            for t in (obs_task.tags or [])
+                        }
+                        has_routing_tag = any(tag in routing_tags for tag in normalized_obs_tags if tag)
                 
                 if has_routing_tag:
                     target_calendar = self._should_reroute_task(obs_task, rem_task.calendar_id)
@@ -513,6 +558,7 @@ class SyncEngine:
             'created_obs_tasks': list(self.created_obs_task_ids),
             'created_rem_tasks': list(self.created_rem_task_ids),
             'rem_to_obs_creations': self.rem_to_obs_creations,
+            'skipped_rem_count': self.skipped_rem_count,
             'dry_run': dry_run
         }
     

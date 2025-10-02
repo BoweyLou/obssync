@@ -501,11 +501,13 @@ class SyncConfig:
                 return route.get("calendar_id")
         return None
 
-    def set_tag_route(self, vault_id: str, tag: str, calendar_id: str) -> None:
+    def set_tag_route(self, vault_id: str, tag: str, calendar_id: str, import_mode: str = "existing_only") -> None:
         """Create or update a tag routing rule for a vault."""
         normalized_tag = self._normalize_tag_value(tag)
         if not vault_id or not normalized_tag or not calendar_id:
             return
+        if import_mode not in ["existing_only", "full_import"]:
+            import_mode = "existing_only"
         self.tag_routes = [
             route
             for route in self.tag_routes
@@ -518,6 +520,7 @@ class SyncConfig:
                 "vault_id": vault_id,
                 "tag": normalized_tag,
                 "calendar_id": calendar_id,
+                "import_mode": import_mode,
             }
         )
 
@@ -533,6 +536,28 @@ class SyncConfig:
                 route.get("vault_id") == vault_id and route.get("tag") == normalized_tag
             )
         ]
+
+    def get_tag_route_import_mode(self, vault_id: str, tag: str) -> str:
+        """Get the import mode for a tag route, defaults to 'existing_only'."""
+        normalized_tag = self._normalize_tag_value(tag)
+        if not vault_id or not normalized_tag:
+            return "existing_only"
+        for route in self.tag_routes:
+            if route.get("vault_id") == vault_id and route.get("tag") == normalized_tag:
+                return route.get("import_mode", "existing_only")
+        return "existing_only"
+
+    def set_tag_route_import_mode(self, vault_id: str, tag: str, import_mode: str) -> None:
+        """Update the import mode for an existing tag route."""
+        normalized_tag = self._normalize_tag_value(tag)
+        if not vault_id or not normalized_tag:
+            return
+        if import_mode not in ["existing_only", "full_import"]:
+            import_mode = "existing_only"
+        for route in self.tag_routes:
+            if route.get("vault_id") == vault_id and route.get("tag") == normalized_tag:
+                route["import_mode"] = import_mode
+                break
 
     def remove_vault(self, vault_id: str) -> bool:
         """Remove a vault and all its associated data.
@@ -769,6 +794,7 @@ class SyncConfig:
             vault_id = route.get("vault_id")
             tag = self._normalize_tag_value(route.get("tag"))
             calendar_id = route.get("calendar_id")
+            import_mode = route.get("import_mode", "existing_only")
             if not vault_id or not tag or not calendar_id:
                 continue
             key = (vault_id, tag)
@@ -776,6 +802,7 @@ class SyncConfig:
                 "vault_id": vault_id,
                 "tag": tag,
                 "calendar_id": calendar_id,
+                "import_mode": import_mode,
             }
             if key in index_map:
                 normalized_routes[index_map[key]] = normalized_entry

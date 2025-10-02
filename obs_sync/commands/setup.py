@@ -1073,6 +1073,19 @@ class SetupCommand:
 
         return chosen
 
+    def _check_route_conflicts(self, vault_id: str, calendar_id: str) -> List[Vault]:
+        """Check if other vaults already route to the same calendar."""
+        conflicting_vaults = []
+        for route in self.config.tag_routes:
+            if route.get("calendar_id") == calendar_id and route.get("vault_id") != vault_id:
+                # Find the vault
+                for v in self.config.vaults:
+                    if v.vault_id == route.get("vault_id"):
+                        if v not in conflicting_vaults:
+                            conflicting_vaults.append(v)
+                        break
+        return conflicting_vaults
+
     def _configure_tag_routes(self, vault: Vault) -> None:
         """Interactive tag routing configuration for a given vault."""
         if not vault or not self.config.reminders_lists:
@@ -1182,9 +1195,33 @@ class SetupCommand:
                     print(f"   ⏭️  Skipped mapping for {tag_value}")
                     continue
 
-                self.config.set_tag_route(vault.vault_id, tag_value, selected_list.identifier)
+                # Check for conflicts with other vaults
+                conflicts = self._check_route_conflicts(vault.vault_id, selected_list.identifier)
+                if conflicts:
+                    print(f"\n   ⚠️  Warning: The following vaults also route to '{selected_list.name}':")
+                    for cv in conflicts:
+                        print(f"      - {cv.name}")
+                    confirm = input("   Continue anyway? (y/N): ").strip().lower()
+                    if confirm not in {"y", "yes"}:
+                        print(f"   ⏭️  Skipped mapping for {tag_value}")
+                        continue
+
+                # Prompt for import mode
+                current_mode = self.config.get_tag_route_import_mode(vault.vault_id, tag_value)
+                print(f"\n   Import mode for {tag_value}:")
+                print("      1. existing_only - Only sync tasks already in this vault")
+                print("      2. full_import - Import all tasks with this tag from Reminders")
+                mode_input = input(f"   Choice (1/2) [current: {current_mode}]: ").strip()
+                import_mode = current_mode
+                if mode_input == "1":
+                    import_mode = "existing_only"
+                elif mode_input == "2":
+                    import_mode = "full_import"
+
+                self.config.set_tag_route(vault.vault_id, tag_value, selected_list.identifier, import_mode)
                 list_name = self._get_list_name(selected_list.identifier)
-                print(f"   ✓ {tag_value} → {list_name}")
+                mode_display = "(existing only)" if import_mode == "existing_only" else "(full import)"
+                print(f"   ✓ {tag_value} → {list_name} {mode_display}")
 
         print("   Tag routing complete.")
 

@@ -103,7 +103,9 @@ class SyncCommand:
                     print("   Tag routes:")
                     for route in tag_routes:
                         route_list = self._get_list_name(route.get("calendar_id"))
-                        print(f"     • {route['tag']} → {route_list}")
+                        import_mode = route.get("import_mode", "existing_only")
+                        mode_display = "(existing only)" if import_mode == "existing_only" else "(full import)"
+                        print(f"     • {route['tag']} → {route_list} {mode_display}")
 
                 print(f"   🔄 Running sync...")
                 
@@ -206,6 +208,7 @@ class SyncCommand:
         # Aggregate deduplication stats
         total_dedup_obs = 0
         total_dedup_rem = 0
+        total_skipped_rem = 0
         
         # Collect tag routing info across all vaults
         all_tag_summaries = {}
@@ -234,6 +237,9 @@ class SyncCommand:
                 total_dedup_obs += dedup_stats.get('obs_deleted', 0)
                 total_dedup_rem += dedup_stats.get('rem_deleted', 0)
                 
+                # Aggregate skipped reminders
+                total_skipped_rem += results.get('skipped_rem_count', 0)
+                
                 # Collect tag routing summaries
                 tag_summary = results.get('tag_summary', {})
                 if tag_summary and isinstance(tag_summary, dict):
@@ -254,6 +260,8 @@ class SyncCommand:
         print(f"  Total Obsidian tasks: {total_obs_tasks}")
         print(f"  Total Reminders tasks: {total_rem_tasks}")
         print(f"  Total matched pairs: {total_links}")
+        if total_skipped_rem > 0:
+            print(f"  Reminders tasks skipped (existing_only mode): {total_skipped_rem}")
         print(f"  Vaults processed: {total_vaults_success + total_vaults_failed} ({total_vaults_success} successful, {total_vaults_failed} failed)")
         
         # Show tag routing summary if available
