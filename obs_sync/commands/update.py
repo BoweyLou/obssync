@@ -83,21 +83,61 @@ class UpdateCommand:
             elif "Your branch is behind" in status_output:
                 print("📥 Updates available!")
                 
-                # Show what would be updated
-                result = subprocess.run(
-                    ["git", "log", "--oneline", "HEAD..@{u}"],
+                # Show what would be updated - display versions and changes
+                # Get current version tag
+                current_tag_result = subprocess.run(
+                    ["git", "describe", "--tags", "--abbrev=0", "HEAD"],
                     cwd=repo_root,
                     capture_output=True,
                     text=True,
                     check=False
                 )
+                current_version = current_tag_result.stdout.strip() if current_tag_result.returncode == 0 else "unknown"
                 
-                if result.returncode == 0 and result.stdout.strip():
-                    print("\nNew commits:")
-                    for line in result.stdout.strip().split('\n')[:5]:
-                        print(f"  {line}")
-                    if len(result.stdout.strip().split('\n')) > 5:
-                        print(f"  ... and {len(result.stdout.strip().split('\n')) - 5} more")
+                # Get latest version tag from upstream
+                latest_tag_result = subprocess.run(
+                    ["git", "describe", "--tags", "--abbrev=0", "@{u}"],
+                    cwd=repo_root,
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                latest_version = latest_tag_result.stdout.strip() if latest_tag_result.returncode == 0 else "unknown"
+                
+                if current_version != "unknown" and latest_version != "unknown":
+                    print(f"\n📦 Update: {current_version} → {latest_version}")
+                    
+                    # Show commits in the range with better formatting
+                    result = subprocess.run(
+                        ["git", "log", "--format=%s", f"HEAD..@{{u}}"],
+                        cwd=repo_root,
+                        capture_output=True,
+                        text=True,
+                        check=False
+                    )
+                    
+                    if result.returncode == 0 and result.stdout.strip():
+                        print("\nChanges:")
+                        for line in result.stdout.strip().split('\n')[:5]:
+                            print(f"  • {line}")
+                        if len(result.stdout.strip().split('\n')) > 5:
+                            print(f"  ... and {len(result.stdout.strip().split('\n')) - 5} more")
+                else:
+                    # Fallback to commit messages if tags aren't available
+                    result = subprocess.run(
+                        ["git", "log", "--format=%s", "HEAD..@{u}"],
+                        cwd=repo_root,
+                        capture_output=True,
+                        text=True,
+                        check=False
+                    )
+                    
+                    if result.returncode == 0 and result.stdout.strip():
+                        print("\nChanges:")
+                        for line in result.stdout.strip().split('\n')[:5]:
+                            print(f"  • {line}")
+                        if len(result.stdout.strip().split('\n')) > 5:
+                            print(f"  ... and {len(result.stdout.strip().split('\n')) - 5} more")
                 
                 choice = input("\nProceed with update? (y/n) [y]: ").strip().lower()
                 if choice == 'n':
