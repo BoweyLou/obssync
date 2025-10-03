@@ -379,6 +379,8 @@ class SyncConfig:
     # Automation settings (macOS LaunchAgent)
     automation_enabled: bool = False
     automation_interval: int = 3600  # Default: hourly
+    # Update settings
+    update_channel: str = "stable"  # "stable" or "beta"
 
     def __post_init__(self) -> None:
         # Get the path manager
@@ -891,6 +893,7 @@ class SyncConfig:
             sync_calendar_events=sync_settings.get("sync_calendar_events", False),
             automation_enabled=sync_settings.get("automation_enabled", False),
             automation_interval=sync_settings.get("automation_interval", 3600),
+            update_channel=sync_settings.get("update_channel", "stable"),
             obsidian_index_path=paths.get(
                 "obsidian_index", data.get("obsidian_index_path", None)
             ),
@@ -955,6 +958,7 @@ class SyncConfig:
                 "sync_calendar_events": self.sync_calendar_events,
                 "automation_enabled": self.automation_enabled,
                 "automation_interval": self.automation_interval,
+                "update_channel": self.update_channel,
             },
             "paths": {
                 "obsidian_index": self.obsidian_index_path,

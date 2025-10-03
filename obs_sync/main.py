@@ -131,6 +131,11 @@ Examples:
         '--extras',
         help='Extras to install (e.g., "macos,optimization"). Default: "macos" on macOS'
     )
+    update_parser.add_argument(
+        '--channel',
+        choices=['stable', 'beta'],
+        help='Update channel to track (stable=main branch, beta=beta branch). Persists in config.'
+    )
     
     # Migrate command
     migrate_parser = subparsers.add_parser(
@@ -207,7 +212,9 @@ Examples:
             
         elif args.command == 'update':
             cmd = UpdateCommand(config, verbose=args.verbose)
-            success = cmd.run(extras=args.extras)
+            success = cmd.run(extras=args.extras, channel=args.channel)
+            if success:
+                save_config(config, args.config)
             
         elif args.command == 'migrate':
             # Migrate command doesn't need config
