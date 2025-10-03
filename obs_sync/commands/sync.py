@@ -36,15 +36,15 @@ class SyncCommand:
                 # Fallback to legacy behavior if no mappings configured
                 vault_path = self.config.default_vault_path
                 if not vault_path:
-                    print("No Obsidian vault configured. Run 'obs-sync setup' first.")
+                    print("No Obsidian vault is configured. Run 'obs-sync setup' before syncing.")
                     return False
 
                 if not os.path.exists(vault_path):
-                    print(f"Configured vault does not exist: {vault_path}")
+                    print(f"Configured vault not found at {vault_path}. Update your setup or correct the path.")
                     return False
 
                 list_ids = self.config.reminder_list_ids or None
-                print(f"\n📁 Syncing vault: {os.path.basename(vault_path)}")
+                print(f"\n📁 Syncing vault '{os.path.basename(vault_path)}'")
                 vault_result = sync_command(
                     vault_path=vault_path,
                     list_ids=list_ids,
@@ -75,8 +75,8 @@ class SyncCommand:
                 vault_path = vault.path
 
                 if not os.path.exists(vault_path):
-                    print(f"\n⚠️  Vault {idx}/{total_vaults}: {vault.name}")
-                    print(f"   Vault path does not exist: {vault_path}")
+                    print(f"\n⚠️ Vault {idx}/{total_vaults}: {vault.name}")
+                    print(f"   Vault path not found at {vault_path}")
                     all_success = False
                     
                     # Add failed vault to results for summary
@@ -94,18 +94,18 @@ class SyncCommand:
 
                 if calendar_id:
                     list_name = self._get_list_name(calendar_id)
-                    print(f"   → Syncing with default list: {list_name}")
+                    print(f"   → Default Reminders list: {list_name}")
                 else:
-                    print("   → No default Reminders list configured for this vault")
+                    print("   → No default Reminders list mapped to this vault.")
 
                 tag_routes = self.config.get_tag_routes_for_vault(vault.vault_id)
                 if tag_routes:
-                    print("   Tag routes:")
+                    print("   Tag routes applied:")
                     for route in tag_routes:
                         route_list = self._get_list_name(route.get("calendar_id"))
                         import_mode = route.get("import_mode", "existing_only")
-                        mode_display = "(existing only)" if import_mode == "existing_only" else "(full import)"
-                        print(f"     • {route['tag']} → {route_list} {mode_display}")
+                        mode_text = "existing only" if import_mode == "existing_only" else "full import"
+                        print(f"     • {route['tag']} → {route_list} ({mode_text})")
 
                 print(f"   🔄 Running sync...")
                 
@@ -123,9 +123,9 @@ class SyncCommand:
 
                 if not vault_result['success']:
                     all_success = False
-                    print(f"   ❌ Sync failed: {vault_result.get('error', 'Unknown error')}")
+                    print(f"   ❌ Sync failed: {vault_result.get('error', 'Unknown error')} — review the details above.")
                 else:
-                    print(f"   ✅ Sync completed")
+                    print("   ✅ Sync completed.")
                     
                     # Run calendar import if enabled and this is the default vault
                     self.logger.debug(f"Calendar import check: apply_changes={apply_changes}, sync_calendar_events={getattr(self.config, 'sync_calendar_events', 'MISSING')}, has_default_vault={self.config.default_vault is not None}, vault_matches={vault.vault_id == self.config.default_vault.vault_id if self.config.default_vault else False}")
@@ -143,9 +143,9 @@ class SyncCommand:
             self._show_consolidated_summary(vault_results, apply_changes)
             
             if all_success:
-                print("\n✅ All vaults synced successfully!")
+                print("\n✅ All vaults synced successfully.")
             else:
-                print("\n⚠️  Some vaults had sync errors. Check the output above.")
+                print("\n⚠️ Some vaults reported sync errors—review the details above.")
 
             return all_success
 
@@ -182,7 +182,7 @@ class SyncCommand:
     
     def _show_consolidated_summary(self, vault_results: List[dict], apply_changes: bool) -> None:
         """Show consolidated summary across all vaults."""
-        print("\n🔄 Sync Summary")
+        print("\n🔄 Sync summary")
         
         # Aggregate totals
         total_obs_tasks = 0
@@ -256,21 +256,21 @@ class SyncCommand:
                 total_vaults_failed += 1
         
         # Show basic stats
-        print(f"\nOverall Statistics:")
+        print(f"\nOverall statistics:")
         print(f"  Total Obsidian tasks: {total_obs_tasks}")
         print(f"  Total Reminders tasks: {total_rem_tasks}")
         print(f"  Total matched pairs: {total_links}")
         if total_skipped_rem > 0:
-            print(f"  Reminders tasks skipped (existing_only mode): {total_skipped_rem}")
-        print(f"  Vaults processed: {total_vaults_success + total_vaults_failed} ({total_vaults_success} successful, {total_vaults_failed} failed)")
+            print(f"  Reminders tasks skipped because import mode is existing_only: {total_skipped_rem}")
+        print(f"  Vaults processed: {total_vaults_success + total_vaults_failed} — {total_vaults_success} successful / {total_vaults_failed} failed")
         
         # Show tag routing summary if available
         if all_tag_summaries:
-            print("\n📊 Tag Routing Summary (All Vaults):")
+            print("\n📊 Tag routing summary (all vaults):")
             for tag, stats in all_tag_summaries.items():
                 print(f"  {tag}:")
                 for list_name, count in stats.items():
-                    print(f"    → {list_name}: {count} task(s)")
+                    print(f"    → {list_name}: {count} tasks")
         
         # Show changes summary
         has_sync_changes = any([
@@ -287,7 +287,8 @@ class SyncCommand:
         
         if has_sync_changes or has_dedup_changes:
             dry_run = not apply_changes
-            print(f"\nTotal Changes {'to make' if dry_run else 'made'}:")
+            pending = 'to make' if dry_run else 'made'
+            print(f"\nTotal changes {pending}:")
             
             if has_sync_changes:
                 if aggregated_changes["obs_updated"]:
@@ -319,9 +320,9 @@ class SyncCommand:
                     print(f"  Reminders deletions: {total_dedup_rem}")
             
             if dry_run:
-                print("\n💡 This was a dry run. Use --apply to make changes.")
+                print("\n💡 Dry run only—rerun with --apply to apply these changes.")
         else:
-            print("\nNo changes needed - everything is in sync across all vaults!")
+            print("\nNo changes needed. Everything is already in sync across all vaults.")
 
     def _run_calendar_import(self, vault, list_ids: Optional[List[str]]) -> None:
         """Run calendar import for the default vault if conditions are met."""
@@ -423,11 +424,11 @@ def sync_command(
             
             # Display tag routing summary if available
             if 'tag_summary' in results and results['tag_summary']:
-                print("\n📊 Tag Routing Summary:")
+                print("\n📊 Tag routing summary:")
                 for tag, stats in results['tag_summary'].items():
                     print(f"  {tag}:")
                     for list_name, count in stats.items():
-                        print(f"    → {list_name}: {count} task(s)")
+                        print(f"    → {list_name}: {count} tasks")
             
             # Display verbose Reminders → Obsidian creation details if in verbose mode
             if logger.isEnabledFor(logging.DEBUG) and 'rem_to_obs_creations' in results:
@@ -464,7 +465,8 @@ def sync_command(
         
         if show_summary:
             if has_changes:
-                print(f"\nChanges {'to make' if dry_run else 'made'}:")
+                pending = 'to make' if dry_run else 'made'
+                print(f"\nChanges {pending}:")
                 if changes.get("obs_updated", 0):
                     print(f"  Obsidian updates: {changes['obs_updated']}")
                 if changes.get("rem_updated", 0):
@@ -484,7 +486,7 @@ def sync_command(
                 if changes.get("conflicts_resolved", 0):
                     print(f"  Conflicts resolved: {changes['conflicts_resolved']}")
             else:
-                print("\nNo changes needed - everything is in sync!")
+                print("\nNo changes needed. Everything is already in sync.")
 
         # Run deduplication analysis if enabled
         dedup_stats = {"obs_deleted": 0, "rem_deleted": 0}
@@ -513,7 +515,7 @@ def sync_command(
                 print(f"  Reminders deletions: {dedup_stats['rem_deleted']}")
 
         if show_summary and dry_run:
-            print("\nThis was a dry run. Use --apply to make changes.")
+            print("\nDry run only—rerun with --apply to apply changes.")
 
         # Return comprehensive results
         return {
@@ -589,7 +591,7 @@ def _run_deduplication(
 
         if (created_obs_set or created_rem_set) and not dry_run:
             if show_summary:
-                print("\n⏭️  Skipping deduplication for this run (new tasks were just created)")
+                print("\n⏭️ Skipping deduplication for this run because new tasks were just created.")
             logger.debug(
                 "Skipping deduplication due to newly created tasks: obs=%s rem=%s",
                 sorted(created_obs_set),
@@ -638,7 +640,7 @@ def _run_deduplication(
         if not config.dedup_auto_apply:
             if not confirm_deduplication():
                 if show_summary:
-                    print("Deduplication skipped.")
+                    print("Deduplication skipped for this run.")
                 return {"obs_deleted": 0, "rem_deleted": 0}
         
         # Create task maps for linked counterpart display
@@ -662,7 +664,7 @@ def _run_deduplication(
                 continue
             
             if keep_indices is None:
-                print("   ⏭️  Skipped this cluster")
+                print("   ⏭️ Skipped this duplicate cluster.")
                 continue
                 
             # Determine which tasks to delete
@@ -686,7 +688,7 @@ def _run_deduplication(
                 kept_count = len(all_tasks) - len(tasks_to_delete)
                 print(f"   ✅ Kept {kept_count} task(s), deleted {len(tasks_to_delete)} task(s)")
             else:
-                print("   📝 All tasks kept")
+                print("   📝 Kept every task in this cluster.")
         
         return total_stats
         

@@ -28,7 +28,7 @@ class CalendarCommand:
 
             vault_path = self.config.default_vault_path
             if not vault_path:
-                print("No Obsidian vault configured. Run 'obs-sync setup' first.")
+                print("No Obsidian vault is configured. Run 'obs-sync setup' before syncing calendar events.")
                 return False
 
             return calendar_sync_command(
@@ -73,11 +73,11 @@ def calendar_sync_command(target_date: Optional[date] = None,
         # Try to find from environment or config
         vault_path = os.environ.get('OBSIDIAN_VAULT')
         if not vault_path:
-            print("Error: No vault path specified. Use --vault-path or set OBSIDIAN_VAULT")
+            print("Error: No vault path specified. Use --vault-path or set OBSIDIAN_VAULT.")
             return False
     
     if not os.path.exists(vault_path):
-        print(f"Error: Vault not found at {vault_path}")
+        print(f"Error: Vault not found at {vault_path}.")
         return False
     
     try:
@@ -89,24 +89,24 @@ def calendar_sync_command(target_date: Optional[date] = None,
         logger.info(f"Fetching calendar events for {target_date}")
         events = gateway.get_events_for_date(target_date, calendar_ids)
         
-        print(f"Found {len(events)} calendar events for {target_date}")
+        print(f"Found {len(events)} calendar events for {target_date}.")
         
         # Update daily note
         if dry_run:
-            print("\nEvents to add to daily note:")
+            print("\nEvents that will be added to the daily note:")
             for event in events:
                 time_str = "All Day" if event.is_all_day else event.start_time.strftime("%H:%M")
                 print(f"  - {time_str}: {event.title}")
                 if event.location:
-                    print(f"    Location: {event.location}")
+                    print(f"    Location — {event.location}")
         else:
             note_path = note_manager.update_daily_note(target_date, events)
-            print(f"\nUpdated daily note: {note_path}")
-            print(f"Added {len(events)} calendar events")
+            print(f"\nUpdated daily note saved to: {note_path}")
+            print(f"Added {len(events)} calendar events.")
         
         return True
         
     except Exception as e:
         logger.error(f"Calendar sync failed: {e}")
-        print(f"Error: Calendar sync failed - {e}")
+        print(f"Error: Calendar sync failed — {e}")
         return False

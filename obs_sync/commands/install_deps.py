@@ -85,7 +85,7 @@ class InstallDepsCommand:
         """
         groups = self.get_dependency_groups()
         if group_name not in groups:
-            print(f"❌ Unknown dependency group: {group_name}")
+            print(f"❌ Unknown dependency group '{group_name}'.")
             return False
             
         group_info = groups[group_name]
@@ -94,11 +94,11 @@ class InstallDepsCommand:
         if group_info["platform_required"]:
             current_platform = platform.system()
             if group_info["platform_required"] != current_platform:
-                print(f"⚠️ Skipping {group_name} (requires {group_info['platform_required']}, current: {current_platform})")
+                print(f"⚠️ Skipping {group_name} (requires {group_info['platform_required']}; current platform: {current_platform}).")
                 return True  # Not an error, just not applicable
         
-        print(f"\n📦 Installing {group_name} dependencies...")
-        print(f"Description: {group_info['description']}")
+        print(f"\n📦 Installing the {group_name} dependency group...")
+        print(f"Description: {group_info['description']}.")
         
         if use_pip_extra and group_info.get("pip_extra"):
             # Use pip extras (recommended)
@@ -110,25 +110,25 @@ class InstallDepsCommand:
             cmd = [sys.executable, "-m", "pip", "install"] + packages
         
         if self.verbose:
-            print(f"Running: {' '.join(cmd)}")
+            print(f"Running command: {' '.join(cmd)}")
         
         try:
             result = subprocess.run(cmd, capture_output=not self.verbose, text=True)
             
             if result.returncode == 0:
-                print(f"✅ Successfully installed {group_name} dependencies")
+                print(f"✅ {group_name} dependencies installed successfully.")
                 return True
             else:
-                print(f"❌ Failed to install {group_name} dependencies")
+                print(f"❌ Failed to install the {group_name} dependency group.")
                 if not self.verbose and result.stderr:
-                    print(f"Error: {result.stderr.strip()}")
+                    print(f"Error details: {result.stderr.strip()}")
                 return False
                 
         except FileNotFoundError:
-            print("❌ pip not found. Please ensure Python and pip are installed.")
+            print("❌ pip not found—install Python and pip, then try again.")
             return False
         except Exception as e:
-            print(f"❌ Unexpected error installing {group_name}: {e}")
+            print(f"❌ Unexpected error while installing {group_name}: {e}")
             return False
     
     def get_auto_install_groups(self) -> List[str]:
@@ -171,12 +171,10 @@ class InstallDepsCommand:
                 if info["platform_required"] and info["platform_required"] != current_platform:
                     platform_note = f" (requires {info['platform_required']})"
                 
-                # Check if already installed
                 installed = self.test_dependency_group(group_name)
                 status = "✅ installed" if installed else "❌ not installed"
                 
-                print(f"\n{group_name}: {info['description']}{platform_note}")
-                print(f"  Status: {status}")
+                print(f"\n• {group_name} — {info['description']}{platform_note} (status: {status})")
                 print(f"  Packages: {', '.join(info['packages'])}")
             
             return True
@@ -196,7 +194,7 @@ class InstallDepsCommand:
                     if self.install_dependency_group(group_name):
                         success_count += 1
                 
-                print(f"\n📊 Installation complete: {success_count}/{len(applicable_groups)} groups installed successfully")
+                print(f"\n📊 Installation complete: {success_count}/{len(applicable_groups)} groups installed successfully.")
                 return success_count == len(applicable_groups)
             else:
                 return self.install_dependency_group(group)
@@ -205,23 +203,23 @@ class InstallDepsCommand:
             # Auto-install platform-appropriate dependencies
             auto_groups = self.get_auto_install_groups()
             if not auto_groups:
-                print("🤷 No platform-specific dependencies to auto-install")
+                print("🤷 No platform-specific dependencies to auto-install.")
                 return True
             
-            print(f"🚀 Auto-installing dependencies for {current_platform}: {', '.join(auto_groups)}")
+            print(f"🚀 Auto-installing dependencies for {current_platform}: {', '.join(auto_groups)}.")
             
             success_count = 0
             for group_name in auto_groups:
                 if self.install_dependency_group(group_name):
                     success_count += 1
             
-            print(f"\n📊 Auto-installation complete: {success_count}/{len(auto_groups)} groups installed successfully")
+            print(f"\n📊 Auto-installation complete: {success_count}/{len(auto_groups)} groups installed successfully.")
             return success_count == len(auto_groups)
         
         # Interactive mode
-        print("obs-sync Dependency Installation")
+        print("obs-sync Dependency Setup")
         print("=" * 40)
-        print(f"Platform: {current_platform}")
+        print(f"Detected platform: {current_platform}")
         print()
         
         # Show available groups
@@ -231,21 +229,20 @@ class InstallDepsCommand:
             if info["platform_required"] and info["platform_required"] != current_platform:
                 platform_note = f" (requires {info['platform_required']})"
             
-            # Check if already installed
             installed = self.test_dependency_group(group_name)
             status = "✅ installed" if installed else "❌ not installed"
             
-            print(f"  {i}. {group_name}: {info['description']}{platform_note} [{status}]")
+            print(f"  {i}. {group_name} — {info['description']}{platform_note} [{status}]")
         
         print(f"  {len(dependency_groups) + 1}. all: Install all applicable groups")
         print(f"  {len(dependency_groups) + 2}. auto: Auto-install platform dependencies")
-        print(f"  {len(dependency_groups) + 3}. quit: Exit")
+        print(f"  {len(dependency_groups) + 3}. quit: Exit without installing")
         print()
         
         # Get user selection
         while True:
             try:
-                choice = input(f"Select group to install (1-{len(dependency_groups) + 3}): ").strip()
+                choice = input(f"Select a group to install (1-{len(dependency_groups) + 3}) or type 'quit': ").strip()
                 if choice.lower() in ['q', 'quit']:
                     return True
                 
@@ -262,5 +259,5 @@ class InstallDepsCommand:
                 else:
                     print(f"Please enter a number between 1 and {len(dependency_groups) + 3}")
             except (ValueError, KeyboardInterrupt, EOFError):
-                print("\nInstallation cancelled.")
+                print("\nInstallation cancelled by user.")
                 return True

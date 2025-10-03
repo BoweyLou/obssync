@@ -63,15 +63,15 @@ def format_task_for_display(task: Union[ObsidianTask, RemindersTask],
         status_symbol = "✅" if task.status == TaskStatus.DONE else "⭕"
         location = f"{task.vault_name}:{task.file_path}:{task.line_number}"
         created = _format_date_safe(task.created_at)
-        return f"  {index}. [Obsidian] {status_symbol} {task.description}\n     📍 {location} | 📅 {created}"
+        return f"  • #{index} [Obsidian] {status_symbol} {task.description}\n     📍 {location} | 📅 {created}"
     
-    elif isinstance(task, RemindersTask):
+    if isinstance(task, RemindersTask):
         status_symbol = "✅" if task.status == TaskStatus.DONE else "⭕" 
         location = task.list_name or "Unknown List"
         created = _format_date_safe(task.created_at)
-        return f"  {index}. [Reminders] {status_symbol} {task.title}\n     📍 {location} | 📅 {created}"
+        return f"  • #{index} [Reminders] {status_symbol} {task.title}\n     📍 {location} | 📅 {created}"
     
-    return f"  {index}. [Unknown] {task}"
+    return f"  • #{index} [Unknown] {task}"
 
 
 def display_duplicate_cluster(cluster, obs_tasks_map=None, rem_tasks_map=None) -> None:
@@ -83,8 +83,8 @@ def display_duplicate_cluster(cluster, obs_tasks_map=None, rem_tasks_map=None) -
         obs_tasks_map: Optional dict mapping Obsidian UUIDs to tasks
         rem_tasks_map: Optional dict mapping Reminders UUIDs to tasks
     """
-    print(f"\n🔍 Duplicate tasks found for: \"{cluster.description}\"")
-    print(f"   Found {cluster.total_count} tasks:")
+    print(f"\n🔍 Duplicate tasks detected for '{cluster.description}'.")
+    print(f"   Found {cluster.total_count} related tasks:")
     
     all_tasks = cluster.get_all_tasks()
     for i, task in enumerate(all_tasks, 1):
@@ -99,12 +99,12 @@ def display_duplicate_cluster(cluster, obs_tasks_map=None, rem_tasks_map=None) -
                     # Look for linked Reminders task
                     if linked_uuid in rem_tasks_map:
                         linked_task = rem_tasks_map[linked_uuid]
-                        print(f"     └─ Synced with: [Reminders] {linked_task.title} in {linked_task.list_name}")
+                        print(f"     └─ Synced with → [Reminders] {linked_task.title} ({linked_task.list_name})")
                 else:  # Reminders task
                     # Look for linked Obsidian task
                     if linked_uuid in obs_tasks_map:
                         linked_task = obs_tasks_map[linked_uuid]
-                        print(f"     └─ Synced with: [Obsidian] {linked_task.description} in {linked_task.vault_name}:{linked_task.file_path}")
+                        print(f"     └─ Synced with → [Obsidian] {linked_task.description} ({linked_task.vault_name}:{linked_task.file_path})")
 
 
 def prompt_for_keeps(cluster) -> Optional[List[int]]:
@@ -120,16 +120,16 @@ def prompt_for_keeps(cluster) -> Optional[List[int]]:
     all_tasks = cluster.get_all_tasks()
     max_index = len(all_tasks)
     
-    print(f"\n❓ Which tasks would you like to keep? (1-{max_index})")
+    print(f"\n❓ Which tasks should stay? (1-{max_index})")
     print("   Options:")
-    print("   • Enter numbers separated by commas (e.g., '1,3')")
-    print("   • Enter 'all' or 'skip' to keep everything")
-    print("   • Enter 'none' or 'n' to delete all tasks")
-    print("   • Press Enter to skip this cluster")
+    print("   • Enter numbers separated by commas (example: 1,3)")
+    print("   • Type 'all' to keep everything")
+    print("   • Type 'none' to delete all tasks in the cluster")
+    print("   • Press Enter or type 'skip' to move to the next cluster")
     
     while True:
         try:
-            response = input("   Keep: ").strip().lower()
+            response = input("   Tasks to keep: ").strip().lower()
             
             if not response or response == 'skip':
                 return None
@@ -149,14 +149,14 @@ def prompt_for_keeps(cluster) -> Optional[List[int]]:
                     if 1 <= idx <= max_index:
                         indices.append(idx - 1)  # Convert to 0-based
                     else:
-                        print(f"   ⚠️  Invalid index: {idx} (must be 1-{max_index})")
+                        print(f"   ⚠️ {idx} is outside 1-{max_index}.")
                         raise ValueError()
                 else:
-                    print(f"   ⚠️  Invalid input: '{part}' (must be a number)")
+                    print(f"   ⚠️ '{part}' isn’t numeric—enter digits only.")
                     raise ValueError()
             
             if not indices:
-                print("   ⚠️  No valid indices provided")
+                print("   ⚠️ Enter at least one valid number.")
                 continue
                 
             # Remove duplicates and sort
@@ -166,7 +166,7 @@ def prompt_for_keeps(cluster) -> Optional[List[int]]:
         except (ValueError, KeyboardInterrupt):
             if not response:  # Empty input means skip
                 return None
-            print("   Please try again.")
+            print("   Try again using one of the options above.")
 
 
 def confirm_deduplication() -> bool:
@@ -176,11 +176,7 @@ def confirm_deduplication() -> bool:
     Returns:
         True if user wants to proceed, False otherwise
     """
-    print("\n❓ Run task deduplication? This will let you interactively")
-    print("   remove duplicate tasks found across Obsidian and Reminders.")
-    print("   (y/n) [default: n]: ", end="")
-    
-    response = input().strip().lower()
+    response = input("\n❓ Run task deduplication? This interactive step lets you remove duplicates across Obsidian and Reminders (y/N): ").strip().lower()
     return response in ['y', 'yes']
 
 
@@ -199,12 +195,12 @@ def show_deduplication_summary(clusters: List,
     total_deleted = deletion_stats.get("obs_deleted", 0) + deletion_stats.get("rem_deleted", 0)
     
     if total_deleted > 0:
-        print(f"\n✅ Deduplication complete:")
+        print("\n✅ Deduplication complete:")
         if deletion_stats.get("obs_deleted", 0):
-            print(f"   • Deleted {deletion_stats['obs_deleted']} Obsidian task(s)")
+            print(f"   • Deleted {deletion_stats['obs_deleted']} Obsidian tasks.")
         if deletion_stats.get("rem_deleted", 0):
-            print(f"   • Deleted {deletion_stats['rem_deleted']} Reminders task(s)")
-        print(f"   • Processed {len(clusters)} duplicate cluster(s)")
+            print(f"   • Deleted {deletion_stats['rem_deleted']} Reminders tasks.")
+        print(f"   • Processed {len(clusters)} duplicate clusters.")
     else:
-        print(f"\n📝 Deduplication skipped or no changes made")
-        print(f"   • Found {len(clusters)} duplicate cluster(s)")
+        print("\n📝 Deduplication skipped or no changes were needed.")
+        print(f"   • Found {len(clusters)} duplicate clusters.")

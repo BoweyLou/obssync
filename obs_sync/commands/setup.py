@@ -23,17 +23,17 @@ class SetupCommand:
 
     def run(self, reconfigure: bool = False, add: bool = False) -> bool:
         """Run interactive setup or additive flow."""
-        print("obs-sync Setup")
+        print("obs-sync Setup Assistant")
         print("=" * 40)
 
         if add and reconfigure:
-            print("\n⚠️ '--add' ignored because '--reconfigure' was provided.")
+            print("\n⚠️ Ignoring --add because --reconfigure already covers adding items.")
             add = False
 
         if add:
-            print("\nℹ️  '--add' is deprecated. Use '--reconfigure' and choose the new add options instead.")
+            print("\nℹ️  '--add' is deprecated; use --reconfigure and pick the add options during that flow.")
             if not self.config.vaults:
-                print("\nNo existing configuration found. Running full setup instead.")
+                print("\nNo existing configuration detected—starting the full setup.")
                 return self._run_full_setup(reconfigure=True)
             return self._run_additional_flow()
 
@@ -42,7 +42,7 @@ class SetupCommand:
     def _run_full_setup(self, reconfigure: bool) -> bool:
         """Run the full interactive setup."""
         if self.config.vaults and not reconfigure:
-            print("Already configured. Use --reconfigure to change settings.")
+            print("An existing configuration is in place. Run with --reconfigure to update it.")
             return True
         
         # If reconfiguring and already have config, ask whether to reset or amend
@@ -57,27 +57,27 @@ class SetupCommand:
                 existing_vault_ids[normalized_path] = vault.vault_id
 
         # Discover vaults
-        print("\n🔍 Searching for Obsidian vaults...")
+        print("\n🔍 Looking for Obsidian vaults...")
         vaults = self._discover_vaults()
 
         if not vaults:
-            print("No vaults found. Please specify vault location manually.")
-            vault_path = input("Vault path: ").strip()
+            print("No Obsidian vaults were detected—enter a vault path manually.")
+            vault_path = input("Enter vault path: ").strip()
             if os.path.isdir(vault_path):
                 vault_name = os.path.basename(vault_path)
                 vaults = [Vault(name=vault_name, path=vault_path)]
             else:
-                print("Invalid path.")
+                print("That path couldn’t be opened. Enter a valid vault directory.")
                 return False
 
         # Select vaults
         print(f"\nFound {len(vaults)} vault(s):")
         for i, vault in enumerate(vaults, 1):
-            print(f"  {i}. {vault.name} ({vault.path})")
+            print(f"  {i}. {vault.name} — {vault.path}")
 
         if len(vaults) > 1:
-            print("\nWhich vaults do you want to sync? (comma-separated numbers, or 'all')")
-            selection = input("Selection: ").strip()
+            print("\nChoose the vaults to sync (comma-separated numbers or type 'all'):")
+            selection = input("Your selection: ").strip()
 
             if selection.lower() == 'all':
                 selected_vaults = vaults
@@ -86,7 +86,7 @@ class SetupCommand:
                     indices = [int(x.strip()) - 1 for x in selection.split(',')]
                     selected_vaults = [vaults[i] for i in indices if 0 <= i < len(vaults)]
                 except (ValueError, IndexError):
-                    print("Invalid selection.")
+                    print("Selection not recognized—use numbers or 'all'.")
                     return False
         else:
             selected_vaults = vaults
@@ -101,11 +101,11 @@ class SetupCommand:
 
         # Set default vault
         if len(selected_vaults) > 1:
-            print("\nWhich vault should be the default?")
+            print("\nPick the default vault.")
             for i, vault in enumerate(selected_vaults, 1):
                 print(f"  {i}. {vault.name}")
             try:
-                default_idx = int(input("Default vault: ").strip()) - 1
+                default_idx = int(input("Default vault number: ").strip()) - 1
                 if 0 <= default_idx < len(selected_vaults):
                     selected_vaults[default_idx].is_default = True
                     self.config.default_vault_id = selected_vaults[default_idx].vault_id
@@ -119,16 +119,16 @@ class SetupCommand:
         self.config.vaults = selected_vaults
 
         # Discover Reminders lists
-        print("\n📋 Setting up Apple Reminders...")
+        print("\n📋 Discovering Apple Reminders lists...")
         lists = self._discover_reminders_lists()
 
         if lists:
             print(f"\nFound {len(lists)} Reminders list(s):")
             for i, lst in enumerate(lists, 1):
-                print(f"  {i}. {lst.name}")
+                print(f"  {i}. {lst.name} — {lst.identifier or 'Unknown ID'}")
 
-            print("\nWhich lists do you want to sync? (comma-separated numbers, or 'all')")
-            selection = input("Selection: ").strip()
+            print("\nChoose the Reminders lists to sync (comma-separated numbers or 'all'):")
+            selection = input("Your selection: ").strip()
 
             if selection.lower() == 'all':
                 selected_lists = lists
@@ -149,14 +149,14 @@ class SetupCommand:
 
         # Set up vault-to-list mappings
         if self.config.vaults and self.config.reminders_lists:
-            print("\n🔗 Vault to List Mapping")
-            print("Map each vault to a specific Reminders list for sync:")
+            print("\n🔗 Map vaults to Reminders lists")
+            print("Assign each vault to a default Reminders list for syncing:")
 
             for vault in self.config.vaults:
                 print(f"\nVault: {vault.name}")
                 print("Available lists:")
                 for i, lst in enumerate(self.config.reminders_lists, 1):
-                    print(f"  {i}. {lst.name}")
+                    print(f"  {i}. {lst.name} — {lst.identifier or 'Unknown ID'}")
 
                 # Default to first list or existing mapping
                 existing_mapping = self.config.get_vault_mapping(vault.vault_id)
@@ -168,7 +168,7 @@ class SetupCommand:
                             default_choice = i
                             break
 
-                choice_input = input(f"Select list for this vault [{default_choice}]: ").strip()
+                choice_input = input(f"Select a Reminders list for this vault [{default_choice}] (Enter to accept default): ").strip()
 
                 if choice_input:
                     try:
@@ -181,20 +181,20 @@ class SetupCommand:
                 if 1 <= choice <= len(self.config.reminders_lists):
                     selected_list = self.config.reminders_lists[choice - 1]
                     self.config.set_vault_mapping(vault.vault_id, selected_list.identifier)
-                    print(f"  ✓ Mapped to: {selected_list.name}")
+                    print(f"✓ Mapped to {selected_list.name}.")
                 else:
                     # Default to first list if invalid choice
                     selected_list = self.config.reminders_lists[0]
                     self.config.set_vault_mapping(vault.vault_id, selected_list.identifier)
-                    print(f"  ✓ Mapped to: {selected_list.name} (default)")
+                    print(f"✓ Mapped to {selected_list.name} (default).")
 
                 self._configure_tag_routes(vault)
 
         # Sync settings
-        print("\n⚙️ Sync Settings")
+        print("\n⚙️ Sync settings")
 
         # Minimum score
-        print(f"Minimum match score (0.0-1.0) [default: {self.config.min_score}]: ", end="")
+        print(f"Minimum match score (0.0-1.0) [default {self.config.min_score}]: ", end="")
         score_input = input().strip()
         if score_input:
             try:
@@ -203,30 +203,30 @@ class SetupCommand:
                 pass
 
         # Include completed tasks
-        print("Include completed tasks? (y/n) [default: n]: ", end="")
+        print("Include completed tasks? (y/N): ", end="")
         include_input = input().strip().lower()
         self.config.include_completed = include_input == 'y'
 
         # Calendar sync
-        print("Sync calendar events to daily notes? (y/n) [default: n]: ", end="")
+        print("Sync Apple Calendar events to daily notes? (y/N): ", end="")
         calendar_input = input().strip().lower()
         self.config.sync_calendar_events = calendar_input == 'y'
 
-        print("\n✅ Setup complete!")
+        print("\n✅ Setup complete")
         print("\nNext steps:")
-        print("  1. Run 'obs-sync sync' to preview sync")
+        print("  1. Run 'obs-sync sync' to review changes")
         print("  2. Run 'obs-sync sync --apply' to apply changes")
 
         return True
 
     def _handle_reconfigure_choice(self) -> bool:
         """Handle the reconfigure choice between reset and amend."""
-        print("\n⚙️  Reconfigure Options:")
-        print("  1. Reset - Clear configuration and start fresh")
-        print("  2. Amend - Modify existing vault/list mappings and tag routes")
+        print("\n⚙️ Reconfigure options")
+        print("  1. Reset - clear the configuration and start over")
+        print("  2. Amend - adjust vault/list mappings or tag routes")
         
         while True:
-            choice = input("\nChoose option [1-2]: ").strip()
+            choice = input("\nChoose an option [1-2]: ").strip()
             if choice == '1':
                 print("\n🔄 Resetting configuration...")
                 return self._run_full_reset()
@@ -234,11 +234,11 @@ class SetupCommand:
                 print("\n✏️  Amending existing configuration...")
                 return self._run_amend_flow()
             else:
-                print("Invalid choice. Please enter 1 or 2.")
+                print("Please enter 1 or 2 to continue.")
     
     def _run_full_reset(self) -> bool:
         """Run the full reset flow - clear all existing state and start fresh."""
-        print("\n🗑️  Clearing existing sync state...")
+        print("\n🗑️ Clearing existing sync data...")
         
         # Clear sync links store
         try:
@@ -247,23 +247,23 @@ class SetupCommand:
             sync_links_path = path_manager.sync_links_path
             if sync_links_path.exists():
                 sync_links_path.unlink()
-                print(f"  ✓ Removed sync links store: {sync_links_path}")
+                print(f"✓ Removed sync links store - {sync_links_path}")
             else:
-                print("  ✓ No existing sync links store found")
+                print("✓ No existing sync link store found.")
                 
             # Clear task indices as well for clean slate
             obsidian_index_path = path_manager.obsidian_index_path
             if obsidian_index_path.exists():
                 obsidian_index_path.unlink()
-                print(f"  ✓ Removed Obsidian task index: {obsidian_index_path}")
+                print(f"✓ Removed Obsidian task index - {obsidian_index_path}")
                 
             reminders_index_path = path_manager.reminders_index_path
             if reminders_index_path.exists():
                 reminders_index_path.unlink()
-                print(f"  ✓ Removed Reminders task index: {reminders_index_path}")
+                print(f"✓ Removed Reminders task index - {reminders_index_path}")
                 
         except Exception as e:
-            print(f"  ⚠️  Warning: Could not clear sync store: {e}")
+            print(f"⚠️ Warning: Could not clear sync store: {e}")
             if self.verbose:
                 traceback.print_exc()
         
@@ -272,7 +272,7 @@ class SetupCommand:
         
         # Clear tag routes from config
         self.config.tag_routes = []
-        print("  ✓ Cleared tag routes")
+        print("✓ Cleared tag routes.")
         
         # Continue with the original full setup logic
         return self._continue_full_setup()
@@ -280,7 +280,7 @@ class SetupCommand:
     def _clear_inbox_files(self) -> None:
         """Clear inbox files from all configured vaults."""
         if not self.config.vaults:
-            print("  ✓ No vaults configured, skipping inbox cleanup")
+            print("✓ No vaults configured—skipping inbox cleanup.")
             return
             
         inbox_filename = self.config.obsidian_inbox_path
@@ -291,7 +291,7 @@ class SetupCommand:
                 vault_path = Path(vault.path)
                 if not vault_path.exists():
                     if self.verbose:
-                        print(f"  ⚠️  Vault path does not exist: {vault_path}")
+                        print(f"⚠️ Vault path does not exist: {vault_path}")
                     continue
                     
                 inbox_path = vault_path / inbox_filename
@@ -299,17 +299,17 @@ class SetupCommand:
                     inbox_path.unlink()
                     cleared_count += 1
                     if self.verbose:
-                        print(f"  ✓ Removed inbox from {vault.name}: {inbox_path}")
+                        print(f"✓ Removed inbox from {vault.name} - {inbox_path}")
                         
             except Exception as e:
-                print(f"  ⚠️  Could not clear inbox from {vault.name}: {e}")
+                print(f"⚠️ Could not clear inbox from {vault.name}: {e}")
                 if self.verbose:
                     traceback.print_exc()
         
         if cleared_count > 0:
-            print(f"  ✓ Cleared {cleared_count} inbox file(s)")
+            print(f"✓ Cleared {cleared_count} inbox files.")
         else:
-            print("  ✓ No inbox files found to clear")
+            print("✓ No inbox files needed removal.")
 
     def _clear_vault_inbox(self, vault_path: str, vault_name: str) -> bool:
         """Clear inbox file from a specific vault.
@@ -325,19 +325,19 @@ class SetupCommand:
             vault_path_obj = Path(vault_path)
             if not vault_path_obj.exists():
                 if self.verbose:
-                    print(f"  ⚠️  Vault path does not exist: {vault_path}")
+                    print(f"⚠️ Vault path does not exist: {vault_path}")
                 return True  # Consider non-existent path as "cleared"
                 
             inbox_path = vault_path_obj / self.config.obsidian_inbox_path
             if inbox_path.exists():
                 inbox_path.unlink()
-                print(f"  ✓ Removed inbox from {vault_name}: {inbox_path}")
+                print(f"✓ Removed inbox from {vault_name} - {inbox_path}")
             elif self.verbose:
-                print(f"  ✓ No inbox file found in {vault_name}")
+                print(f"✓ No inbox file found in {vault_name}.")
             return True
             
         except Exception as e:
-            print(f"  ⚠️  Could not clear inbox from {vault_name}: {e}")
+            print(f"⚠️ Could not clear inbox from {vault_name}: {e}")
             if self.verbose:
                 traceback.print_exc()
             return False
@@ -356,7 +356,7 @@ class SetupCommand:
             
             if not sync_links_path.exists():
                 if self.verbose:
-                    print("  ✓ No sync links file found")
+                    print("✓ No sync links file found.")
                 return
                 
             # Load existing links
@@ -374,31 +374,31 @@ class SetupCommand:
             if safe_write_json(str(sync_links_path), links_data):
                 removed_count = original_count - len(filtered_links)
                 if removed_count > 0:
-                    print(f"  ✓ Removed {removed_count} sync link(s) for vault")
+                    print(f"✓ Removed {removed_count} sync link(s) for vault.")
                 elif self.verbose:
-                    print("  ✓ No sync links found for vault")
+                    print("✓ No sync links found for this vault.")
             else:
-                print("  ⚠️  Could not update sync links file")
+                print("⚠️ Could not update the sync links file.")
                 
         except Exception as e:
-            print(f"  ⚠️  Could not clear sync links: {e}")
+            print(f"⚠️ Could not clear sync links: {e}")
             if self.verbose:
                 traceback.print_exc()
     
     def _run_amend_flow(self) -> bool:
         """Amend existing vault/list mappings and tag routes without full reset."""
-        print("\n📋 Current Configuration:")
+        print("\n📋 Current configuration overview:")
         print(f"\nVaults ({len(self.config.vaults)}):")
         for vault in self.config.vaults:
             default_marker = " (default)" if vault.is_default else ""
             print(f"  • {vault.name}{default_marker}")
         
-        print(f"\nReminders Lists ({len(self.config.reminders_lists)}):")
+        print(f"\nReminders lists ({len(self.config.reminders_lists)}):")
         for lst in self.config.reminders_lists:
             default_marker = " (default)" if lst.identifier == self.config.default_calendar_id else ""
             print(f"  • {lst.name}{default_marker}")
         
-        print("\n📝 What would you like to modify?")
+        print("\n📝 What would you like to update?")
         menu_options = [
             ("1", "Vault to List mappings", self._amend_vault_mappings),
             ("2", "Tag routing rules", self._amend_tag_routes),
@@ -414,7 +414,7 @@ class SetupCommand:
 
         for key, label, _ in menu_options:
             print(f"  {key}. {label}")
-        print("  11. All of the above (options 1-5, 10)")
+        print("  11. Do everything in options 1-5 and 10")
         print("  12. Cancel")
 
         choice = input("\nSelect options (comma-separated, e.g. '1,2' or 'all'): ").strip()
@@ -452,7 +452,7 @@ class SetupCommand:
     
     def _amend_vault_mappings(self) -> None:
         """Amend vault to list mappings."""
-        print("\n🔗 Vault to List Mapping (Amendment)")
+        print("\n🔗 Update vault-to-list mappings")
         
         for vault in self.config.vaults:
             current_mapping = self.config.get_vault_mapping(vault.vault_id)
@@ -462,10 +462,10 @@ class SetupCommand:
             print("Available lists:")
             for i, lst in enumerate(self.config.reminders_lists, 1):
                 current_marker = " (current)" if lst.identifier == current_mapping else ""
-                print(f"  {i}. {lst.name}{current_marker}")
+                print(f"  {i}. {lst.name}{current_marker} — {lst.identifier or 'Unknown ID'}")
             
-            print("Press Enter to keep current, or select new list:")
-            choice_input = input("Choice: ").strip()
+            print("Press Enter to keep the current list, or enter a new list number:")
+            choice_input = input("Enter choice: ").strip()
             
             if choice_input:
                 try:
@@ -473,9 +473,9 @@ class SetupCommand:
                     if 1 <= choice <= len(self.config.reminders_lists):
                         selected_list = self.config.reminders_lists[choice - 1]
                         self.config.set_vault_mapping(vault.vault_id, selected_list.identifier)
-                        print(f"  ✓ Updated mapping to: {selected_list.name}")
+                        print(f"✓ Updated mapping to {selected_list.name}.")
                 except ValueError:
-                    print(f"  ⚠️ Invalid input, keeping current mapping")
+                    print(f"⚠️ Input not understood—keeping the current mapping.")
     
     def _amend_tag_routes(self) -> None:
         """Amend tag routing rules for all vaults."""
@@ -483,7 +483,7 @@ class SetupCommand:
         
         for vault in self.config.vaults:
             print(f"\nVault: {vault.name}")
-            response = input("Configure tag routes for this vault? (y/n) [n]: ").strip().lower()
+            response = input("Configure tag routes for this vault? (y/N): ").strip().lower()
             if response == 'y':
                 self._configure_tag_routes(vault)
     
@@ -491,7 +491,7 @@ class SetupCommand:
         """Amend the default vault selection."""
         current_default = self.config.default_vault
         print(f"\n📁 Current default vault: {current_default.name if current_default else 'None'}")
-        print("\nSelect new default vault:")
+        print("\nSelect a new default vault:")
         
         for i, vault in enumerate(self.config.vaults, 1):
             current_marker = " (current)" if vault.is_default else ""
@@ -503,7 +503,7 @@ class SetupCommand:
                 choice = int(choice_input)
                 if 1 <= choice <= len(self.config.vaults):
                     self._set_default_vault(self.config.vaults[choice - 1].vault_id)
-                    print(f"✓ Default vault updated to: {self.config.vaults[choice - 1].name}")
+                    print(f"✓ Default vault updated to {self.config.vaults[choice - 1].name}.")
             except (ValueError, IndexError):
                 print("⚠️ Invalid selection. Keeping current default.")
     
@@ -524,7 +524,7 @@ class SetupCommand:
                 choice = int(choice_input)
                 if 1 <= choice <= len(self.config.reminders_lists):
                     self.config.default_calendar_id = self.config.reminders_lists[choice - 1].identifier
-                    print(f"✓ Default list updated to: {self.config.reminders_lists[choice - 1].name}")
+                    print(f"✓ Default list updated to {self.config.reminders_lists[choice - 1].name}.")
             except (ValueError, IndexError):
                 print("⚠️ Invalid selection. Keeping current default.")
     
@@ -538,7 +538,7 @@ class SetupCommand:
         new_setting = "n" if self.config.sync_calendar_events else "y"
         action = "disable" if self.config.sync_calendar_events else "enable"
         
-        choice = input(f"\nWould you like to {action} calendar sync? (y/n) [default: {new_setting}]: ").strip().lower()
+        choice = input(f"\nWould you like to {action} calendar sync? (y/{new_setting.upper()}): ").strip().lower()
         
         if not choice:
             choice = new_setting
@@ -546,13 +546,13 @@ class SetupCommand:
         if choice == 'y':
             if not self.config.sync_calendar_events:
                 self.config.sync_calendar_events = True
-                print("✓ Calendar sync enabled")
+                print("✓ Calendar sync enabled.")
             else:
                 print("Calendar sync is already enabled")
         elif choice == 'n':
             if self.config.sync_calendar_events:
                 self.config.sync_calendar_events = False
-                print("✓ Calendar sync disabled")
+                print("✓ Calendar sync disabled.")
             else:
                 print("Calendar sync is already disabled")
         else:
@@ -587,11 +587,12 @@ class SetupCommand:
             print("\n⚠️  Config shows enabled but LaunchAgent is not loaded - they're out of sync")
         
         # Prompt for enable/disable
-        print("\nAutomation runs 'obs-sync sync --apply' on a schedule.")
+        print("\nAutomation runs 'obs-sync sync --apply' on the schedule you choose.")
         action = "disable" if current_enabled else "enable"
         default_choice = "n" if current_enabled else "y"
         
-        choice = input(f"Would you like to {action} automation? (y/n) [default: {default_choice}]: ").strip().lower()
+        prompt_text = "Disable automation now?" if current_enabled else "Enable automation now?"
+        choice = input(f"{prompt_text} (y/{default_choice.upper()}): ").strip().lower()
         
         if not choice:
             choice = default_choice
@@ -604,22 +605,22 @@ class SetupCommand:
                 if agent_loaded:
                     success, error = unload_agent()
                     if success:
-                        print("  ✓ LaunchAgent unloaded")
+                        print("✓ LaunchAgent unloaded.")
                     else:
-                        print(f"  ⚠️  Failed to unload LaunchAgent: {error}")
+                        print(f"⚠️ Failed to unload LaunchAgent: {error}")
                 
                 plist_path = get_launchagent_path()
                 if plist_path.exists():
                     success, error = uninstall_agent()
                     if success:
-                        print(f"  ✓ Removed LaunchAgent plist: {plist_path}")
+                        print(f"✓ Removed LaunchAgent plist - {plist_path}.")
                     else:
-                        print(f"  ⚠️  Failed to remove plist: {error}")
+                        print(f"⚠️ Failed to remove plist: {error}")
                 
                 self.config.automation_enabled = False
-                print("  ✓ Automation disabled in configuration")
+                print("✓ Automation disabled in configuration.")
             else:
-                print("Automation is already disabled")
+                print("Automation is already disabled.")
             return
         
         elif choice != 'y':
@@ -627,33 +628,33 @@ class SetupCommand:
             return
         
         # User wants to enable automation
-        print("\n⚙️  Configuring automation schedule...")
+        print("\n⚙️ Configuring automation schedule...")
         print("\nAvailable schedules:")
-        print("  1. Hourly (every 3600 seconds) [recommended]")
-        print("  2. Twice daily (every 43200 seconds / 12 hours)")
-        print("  3. Custom interval (specify seconds)")
+        print("  1) Hourly (every 3600 seconds) [recommended]")
+        print("  2) Twice daily (every 43,200 seconds / 12 hours)")
+        print("  3) Custom interval (specify seconds)")
         
-        schedule_choice = input("Choose schedule [1]: ").strip()
+        schedule_choice = input("Choose a schedule [default 1]: ").strip()
         
         if not schedule_choice or schedule_choice == '1':
             interval = 3600  # Hourly
         elif schedule_choice == '2':
             interval = 43200  # Twice daily
         elif schedule_choice == '3':
-            custom_input = input("Enter interval in seconds: ").strip()
+            custom_input = input("Enter a custom interval in seconds: ").strip()
             try:
                 interval = int(custom_input)
                 if interval < 60:
-                    print("⚠️  Minimum interval is 60 seconds. Using 60.")
+                    print("⚠️ Minimum interval is 60 seconds. Using 60.")
                     interval = 60
                 elif interval > 604800:  # 1 week
-                    print("⚠️  Maximum interval is 604800 seconds (1 week). Using 604800.")
+                    print("⚠️ Maximum interval is 604800 seconds (one week). Using 604800.")
                     interval = 604800
             except ValueError:
-                print("⚠️  Invalid interval. Using default (3600 seconds).")
+                print("⚠️ Invalid interval. Using default (3600 seconds).")
                 interval = 3600
         else:
-            print("⚠️  Invalid choice. Using default (hourly).")
+            print("⚠️ Invalid choice. Using default (hourly).")
             interval = 3600
         
         print(f"\n  Selected: {describe_interval(interval)}")
@@ -661,11 +662,11 @@ class SetupCommand:
         # Find obs-sync executable
         obs_sync_path = get_obs_sync_executable()
         if not obs_sync_path:
-            print("\n⚠️  Could not find obs-sync executable.")
-            print("Please ensure obs-sync is installed and in your PATH.")
+            print("\n⚠️ obs-sync executable not found.")
+            print("Install obs-sync and confirm it appears in your PATH, then retry.")
             return
         
-        print(f"  Using executable: {obs_sync_path}")
+        print(f"✓ Using executable: {obs_sync_path}.")
         
         # Get log directory
         path_manager = get_path_manager()
@@ -676,7 +677,7 @@ class SetupCommand:
             print("\n  Unloading existing LaunchAgent...")
             success, error = unload_agent()
             if not success:
-                print(f"  ⚠️  Warning: Failed to unload existing agent: {error}")
+                print(f"⚠️ Warning: Failed to unload the existing agent: {error}")
         
         # Install the LaunchAgent plist
         print("\n  Installing LaunchAgent...")
@@ -686,7 +687,7 @@ class SetupCommand:
             print(f"  ✗ Failed to install LaunchAgent: {error}")
             return
         
-        print(f"  ✓ LaunchAgent plist created: {get_launchagent_path()}")
+        print(f"✓ LaunchAgent plist created at {get_launchagent_path()}.")
         
         # Load the agent
         print("  Loading LaunchAgent...")
@@ -696,7 +697,7 @@ class SetupCommand:
             print(f"  ✗ Failed to load LaunchAgent: {error}")
             return
         
-        print("  ✓ LaunchAgent loaded and scheduled")
+        print("✓ LaunchAgent loaded and scheduled.")
         
         # Update config
         self.config.automation_enabled = True
@@ -718,27 +719,27 @@ class SetupCommand:
                 existing_vault_ids[normalized_path] = vault.vault_id
 
         # Discover vaults
-        print("\n🔍 Searching for Obsidian vaults...")
+        print("\n🔍 Looking for Obsidian vaults...")
         vaults = self._discover_vaults()
 
         if not vaults:
-            print("No vaults found. Please specify vault location manually.")
-            vault_path = input("Vault path: ").strip()
+            print("No Obsidian vaults were detected—enter a vault path manually.")
+            vault_path = input("Enter vault path: ").strip()
             if os.path.isdir(vault_path):
                 vault_name = os.path.basename(vault_path)
                 vaults = [Vault(name=vault_name, path=vault_path)]
             else:
-                print("Invalid path.")
+                print("That path couldn’t be opened. Enter a valid vault directory.")
                 return False
 
         # Select vaults
         print(f"\nFound {len(vaults)} vault(s):")
         for i, vault in enumerate(vaults, 1):
-            print(f"  {i}. {vault.name} ({vault.path})")
+            print(f"  {i}. {vault.name} — {vault.path}")
 
         if len(vaults) > 1:
-            print("\nWhich vaults do you want to sync? (comma-separated numbers, or 'all')")
-            selection = input("Selection: ").strip()
+            print("\nChoose the vaults to sync (comma-separated numbers or type 'all'):")
+            selection = input("Your selection: ").strip()
 
             if selection.lower() == 'all':
                 selected_vaults = vaults
@@ -747,7 +748,7 @@ class SetupCommand:
                     indices = [int(x.strip()) - 1 for x in selection.split(',')]
                     selected_vaults = [vaults[i] for i in indices if 0 <= i < len(vaults)]
                 except (ValueError, IndexError):
-                    print("Invalid selection.")
+                    print("Selection not recognized—use numbers or 'all'.")
                     return False
         else:
             selected_vaults = vaults
@@ -762,11 +763,11 @@ class SetupCommand:
 
         # Set default vault
         if len(selected_vaults) > 1:
-            print("\nWhich vault should be the default?")
+            print("\nPick the default vault.")
             for i, vault in enumerate(selected_vaults, 1):
                 print(f"  {i}. {vault.name}")
             try:
-                default_idx = int(input("Default vault: ").strip()) - 1
+                default_idx = int(input("Default vault number: ").strip()) - 1
                 if 0 <= default_idx < len(selected_vaults):
                     selected_vaults[default_idx].is_default = True
                     self.config.default_vault_id = selected_vaults[default_idx].vault_id
@@ -780,16 +781,16 @@ class SetupCommand:
         self.config.vaults = selected_vaults
 
         # Discover Reminders lists
-        print("\n📋 Setting up Apple Reminders...")
+        print("\n📋 Discovering Apple Reminders lists...")
         lists = self._discover_reminders_lists()
 
         if lists:
             print(f"\nFound {len(lists)} Reminders list(s):")
             for i, lst in enumerate(lists, 1):
-                print(f"  {i}. {lst.name}")
+                print(f"  {i}. {lst.name} — {lst.identifier or 'Unknown ID'}")
 
-            print("\nWhich lists do you want to sync? (comma-separated numbers, or 'all')")
-            selection = input("Selection: ").strip()
+            print("\nChoose the Reminders lists to sync (comma-separated numbers or 'all'):")
+            selection = input("Your selection: ").strip()
 
             if selection.lower() == 'all':
                 selected_lists = lists
@@ -798,8 +799,8 @@ class SetupCommand:
                     indices = [int(x.strip()) - 1 for x in selection.split(',')]
                     selected_lists = [lists[i] for i in indices if 0 <= i < len(lists)]
                 except (ValueError, IndexError):
-                    print("Invalid selection.")
-                    selected_lists = []
+                    print("Selection not recognized—use numbers or 'all'.")
+                    return False
 
             self.config.reminders_lists = selected_lists
             self.config.calendar_ids = [lst.identifier for lst in selected_lists]
@@ -810,14 +811,14 @@ class SetupCommand:
 
         # Set up vault-to-list mappings
         if self.config.vaults and self.config.reminders_lists:
-            print("\n🔗 Vault to List Mapping")
-            print("Map each vault to a specific Reminders list for sync:")
+            print("\n🔗 Map vaults to Reminders lists")
+            print("Assign each vault to a default Reminders list for syncing:")
 
             for vault in self.config.vaults:
                 print(f"\nVault: {vault.name}")
                 print("Available lists:")
                 for i, lst in enumerate(self.config.reminders_lists, 1):
-                    print(f"  {i}. {lst.name}")
+                    print(f"  {i}. {lst.name} — {lst.identifier or 'Unknown ID'}")
 
                 # Default to first list or existing mapping
                 existing_mapping = self.config.get_vault_mapping(vault.vault_id)
@@ -829,7 +830,7 @@ class SetupCommand:
                             default_choice = i
                             break
 
-                choice_input = input(f"Select list for this vault [{default_choice}]: ").strip()
+                choice_input = input(f"Select a Reminders list for this vault [{default_choice}] (Enter to accept default): ").strip()
 
                 if choice_input:
                     try:
@@ -842,20 +843,20 @@ class SetupCommand:
                 if 1 <= choice <= len(self.config.reminders_lists):
                     selected_list = self.config.reminders_lists[choice - 1]
                     self.config.set_vault_mapping(vault.vault_id, selected_list.identifier)
-                    print(f"  ✓ Mapped to: {selected_list.name}")
+                    print(f"✓ Mapped to {selected_list.name}.")
                 else:
                     # Default to first list if invalid choice
                     selected_list = self.config.reminders_lists[0]
                     self.config.set_vault_mapping(vault.vault_id, selected_list.identifier)
-                    print(f"  ✓ Mapped to: {selected_list.name} (default)")
+                    print(f"✓ Mapped to {selected_list.name} (default).")
 
                 self._configure_tag_routes(vault)
 
         # Sync settings
-        print("\n⚙️ Sync Settings")
+        print("\n⚙️ Sync settings")
 
         # Minimum score
-        print(f"Minimum match score (0.0-1.0) [default: {self.config.min_score}]: ", end="")
+        print(f"Minimum match score (0.0-1.0) [default {self.config.min_score}]: ", end="")
         score_input = input().strip()
         if score_input:
             try:
@@ -864,17 +865,17 @@ class SetupCommand:
                 pass
 
         # Include completed tasks
-        print("Include completed tasks? (y/n) [default: n]: ", end="")
+        print("Include completed tasks? (y/N): ", end="")
         include_input = input().strip().lower()
         self.config.include_completed = include_input == 'y'
 
-        print("\n✅ Setup complete!")
+        print("\n✅ Setup complete")
         print("\nNext steps:")
-        print("  1. Run 'obs-sync sync' to preview sync")
+        print("  1. Run 'obs-sync sync' to review changes")
         print("  2. Run 'obs-sync sync --apply' to apply changes")
 
         # Calendar sync
-        print("Sync calendar events to daily notes? (y/n) [default: n]: ", end="")
+        print("Sync Apple Calendar events to daily notes? (y/N): ", end="")
         calendar_input = input().strip().lower()
         self.config.sync_calendar_events = calendar_input == 'y'
 
@@ -897,7 +898,7 @@ class SetupCommand:
             print(f"\nVault: {vault.name}")
             print("Available lists:")
             for i, lst in enumerate(self.config.reminders_lists, 1):
-                print(f"  {i}. {lst.name}")
+                print(f"  {i}. {lst.name} — {lst.identifier or 'Unknown ID'}")
 
             choice_input = input("Select list for this vault [1]: ").strip()
             choice = 1
@@ -909,10 +910,10 @@ class SetupCommand:
 
             if 1 <= choice <= len(self.config.reminders_lists):
                 selected_list = self.config.reminders_lists[choice - 1]
-                print(f"  ✓ Mapped to: {selected_list.name}")
+                print(f"✓ Mapped to {selected_list.name}.")
             else:
                 selected_list = self.config.reminders_lists[0]
-                print(f"  ✓ Mapped to: {selected_list.name} (default)")
+                print(f"✓ Mapped to {selected_list.name} (default).")
 
             self.config.set_vault_mapping(vault.vault_id, selected_list.identifier)
             self._configure_tag_routes(vault)
@@ -925,7 +926,7 @@ class SetupCommand:
             return
 
         print("\n🔗 Update vault mappings with new lists?")
-        response = input("Review vault mappings? (y/n) [n]: ").strip().lower()
+        response = input("Review vault mappings now? (y/N): ").strip().lower()
         if response != 'y':
             return
 
@@ -942,10 +943,10 @@ class SetupCommand:
             print("Available lists:")
             for i, lst in enumerate(self.config.reminders_lists, 1):
                 marker = " (current)" if lst.identifier == current_mapping else ""
-                print(f"  {i}. {lst.name}{marker}")
+                print(f"  {i}. {lst.name}{marker} — {lst.identifier or 'Unknown ID'}")
 
-            print("Press Enter to keep current, or select new list:")
-            choice_input = input("Choice: ").strip()
+            print("Press Enter to keep the current list, or enter a new list number:")
+            choice_input = input("Enter choice: ").strip()
 
             if choice_input:
                 try:
@@ -953,7 +954,7 @@ class SetupCommand:
                     if 1 <= choice <= len(self.config.reminders_lists):
                         selected_list = self.config.reminders_lists[choice - 1]
                         self.config.set_vault_mapping(vault.vault_id, selected_list.identifier)
-                        print(f"  ✓ Updated mapping to: {selected_list.name}")
+                        print(f"✓ Updated mapping to {selected_list.name}.")
                 except ValueError:
                     pass
 
@@ -1039,9 +1040,9 @@ class SetupCommand:
         if available:
             print(f"\nDiscovered {len(available)} additional vault(s):")
             for i, vault in enumerate(available, 1):
-                print(f"  {i}. {vault.name} ({vault.path})")
+                print(f"  {i}. {vault.name} — {vault.path}")
             print("Select vaults to add (comma-separated numbers, 'all', or press Enter to skip)")
-            selection = input("Selection: ").strip()
+            selection = input("Your selection: ").strip()
             if selection:
                 if selection.lower() == 'all':
                     added = list(available)
@@ -1070,26 +1071,26 @@ class SetupCommand:
     def _prompt_manual_vaults(self, existing_paths: Set[str]) -> List[Vault]:
         """Prompt the user to add vaults by path."""
         added: List[Vault] = []
-        response = input("\nAdd a vault by path? (y/n): ").strip().lower()
+        response = input("\nAdd a vault by path? (y/N): ").strip().lower()
 
         while response == 'y':
-            vault_path = input("Vault path: ").strip()
+            vault_path = input("Enter vault path: ").strip()
             normalized = self._normalize_path(vault_path)
 
             if not os.path.isdir(normalized):
-                print("Invalid path. Please try again.")
+                print("That path couldn’t be opened. Enter a valid vault directory. Please try again.")
             elif normalized in existing_paths or normalized in {self._normalize_path(v.path) for v in added}:
                 print("Vault already configured.")
             else:
                 default_name = os.path.basename(normalized.rstrip(os.sep)) or normalized
-                name_input = input(f"Vault name [{default_name}]: ").strip()
+                name_input = input(f"Vault name [{default_name} or Enter to keep]: ").strip()
                 name = name_input or default_name
                 added_vault = Vault(name=name, path=normalized)
                 added.append(added_vault)
                 existing_paths.add(normalized)
                 print(f"Added vault '{name}'.")
 
-            response = input("Add another vault? (y/n): ").strip().lower()
+            response = input("Add another vault? (y/N): ").strip().lower()
 
         return added
 
@@ -1109,7 +1110,7 @@ class SetupCommand:
         for i, lst in enumerate(available, 1):
             print(f"  {i}. {lst.name}")
         print("Select lists to add (comma-separated numbers, 'all', or press Enter to skip)")
-        selection = input("Selection: ").strip()
+        selection = input("Your selection: ").strip()
 
         if not selection:
             return []
@@ -1188,7 +1189,7 @@ class SetupCommand:
             print("   • Enter 'remove 2' or 'remove #tag' to delete a route")
             print("   • Press Enter or type 'done' to finish")
 
-            response = input("   Selection: ").strip()
+            response = input("   Tag selection: ").strip()
             if not response or response.lower() in {"done", "skip"}:
                 break
 
@@ -1196,7 +1197,7 @@ class SetupCommand:
             if lower.startswith("remove"):
                 _, _, removal_target = lower.partition(" ")
                 if not removal_target:
-                    print("   ⚠️  Provide a number or tag name to remove.")
+                    print("   ⚠️ Provide a tag number or tag name to remove.")
                     continue
 
                 tag_to_remove: Optional[str] = None
@@ -1205,36 +1206,36 @@ class SetupCommand:
                     if 1 <= idx <= len(tag_counts):
                         tag_to_remove = tag_counts[idx - 1][0]
                     else:
-                        print("   ⚠️  Invalid tag number.")
+                        print("   ⚠️ Invalid tag number.")
                         continue
                 else:
                     tag_to_remove = SyncConfig._normalize_tag_value(removal_target)
                     if not tag_to_remove:
-                        print("   ⚠️  Invalid tag format.")
+                        print("   ⚠️ Tag format not recognized.")
                         continue
 
                 if self.config.get_tag_route(vault.vault_id, tag_to_remove):
                     self.config.remove_tag_route(vault.vault_id, tag_to_remove)
                     print(f"   ⏹️  Removed routing for {tag_to_remove}")
                 else:
-                    print("   ⚠️  No routing exists for that tag.")
+                    print("   ⚠️ No routing exists for that tag.")
                 continue
 
             selections = [part.strip() for part in response.split(',') if part.strip()]
             if not selections:
-                print("   ⚠️  Provide at least one tag number.")
+                print("   ⚠️ Select at least one tag number.")
                 continue
 
             indices: List[int] = []
             valid = True
             for part in selections:
                 if not part.isdigit():
-                    print(f"   ⚠️  Invalid input: '{part}'")
+                    print(f"   ⚠️ '{part}' isn’t a number—enter digits only.")
                     valid = False
                     break
                 idx = int(part)
                 if idx < 1 or idx > len(tag_counts):
-                    print(f"   ⚠️  Tag number out of range: {idx}")
+                    print(f"   ⚠️ Tag number out of range: {idx}")
                     valid = False
                     break
                 indices.append(idx)
@@ -1259,7 +1260,7 @@ class SetupCommand:
                     print(f"\n   ⚠️  Warning: The following vaults also route to '{selected_list.name}':")
                     for cv in conflicts:
                         print(f"      - {cv.name}")
-                    confirm = input("   Continue anyway? (y/N): ").strip().lower()
+                    confirm = input("   Continue with this mapping? (y/N): ").strip().lower()
                     if confirm not in {"y", "yes"}:
                         print(f"   ⏭️  Skipped mapping for {tag_value}")
                         continue
@@ -1267,9 +1268,9 @@ class SetupCommand:
                 # Prompt for import mode
                 current_mode = self.config.get_tag_route_import_mode(vault.vault_id, tag_value)
                 print(f"\n   Import mode for {tag_value}:")
-                print("      1. existing_only - Only sync tasks already in this vault")
-                print("      2. full_import - Import all tasks with this tag from Reminders")
-                mode_input = input(f"   Choice (1/2) [current: {current_mode}]: ").strip()
+                print("      1. existing_only — Keep syncing only tasks already in this vault")
+                print("      2. full_import — Import all Reminders tasks with this tag")
+                mode_input = input(f"   Enter choice (1/2) [current: {current_mode}]: ").strip()
                 import_mode = current_mode
                 if mode_input == "1":
                     import_mode = "existing_only"
@@ -1281,7 +1282,7 @@ class SetupCommand:
                 mode_display = "(existing only)" if import_mode == "existing_only" else "(full import)"
                 print(f"   ✓ {tag_value} → {list_name} {mode_display}")
 
-        print("   Tag routing complete.")
+        print("   Tag routing updates saved.")
 
     def _collect_tag_frequencies(self, tasks, vault_id: str) -> List[tuple[str, int]]:
         counts: Counter[str] = Counter()
@@ -1331,13 +1332,13 @@ class SetupCommand:
                 try:
                     choice = int(response)
                 except ValueError:
-                    print("   ⚠️  Invalid selection.")
-                    continue
+                    print("Selection not recognized—use numbers or 'all'.")
+                    return False
 
             if 1 <= choice <= len(self.config.reminders_lists):
                 return self.config.reminders_lists[choice - 1]
 
-            print("   ⚠️  Invalid selection.")
+            print("   ⚠️ Selection not recognized—press Enter to keep the current list.")
 
     def _get_list_name(self, identifier: Optional[str]) -> str:
         if not identifier:
@@ -1363,7 +1364,7 @@ class SetupCommand:
         for idx, vault in enumerate(new_vaults, 1):
             print(f"  {idx}. {vault.name} ({vault.path})")
 
-        response = input("Default vault: ").strip()
+        response = input("Default vault number: ").strip()
         if not response:
             return
 
@@ -1373,7 +1374,7 @@ class SetupCommand:
                 self._set_default_vault(new_vaults[selected_idx].vault_id)
                 print(f"Default vault updated to {new_vaults[selected_idx].name}.")
             else:
-                print("Invalid selection. Keeping current default.")
+                print("Selection not recognized—keeping the current default.")
         except ValueError:
             print("Invalid selection. Keeping current default.")
 
@@ -1392,13 +1393,13 @@ class SetupCommand:
         if current:
             print(f"\nCurrent default Reminders list: {current.name}")
         else:
-            print("\nNo default Reminders list currently set.")
+            print("\nNo default Reminders list is currently set.")
 
         print("Set one of the newly added lists as default? Enter number or press Enter to keep current.")
         for idx, lst in enumerate(new_lists, 1):
             print(f"  {idx}. {lst.name}")
 
-        response = input("Default list: ").strip()
+        response = input("Default list number: ").strip()
         if not response:
             return
 
@@ -1434,15 +1435,15 @@ class SetupCommand:
             print("\n❌ No vaults configured to remove.")
             return
             
-        print("\n🗑️  Remove Vault")
+        print("\n🗑️ Remove Vault")
         print("\nConfigured vaults:")
         
         for i, vault in enumerate(self.config.vaults, 1):
             default_marker = " (default)" if vault.is_default else ""
-            print(f"  {i}. {vault.name}{default_marker}")
+            print(f"  {i}. {vault.name}{default_marker} — {vault.path}")
             
         try:
-            choice = input(f"\nSelect vault to remove (1-{len(self.config.vaults)}, or 'cancel'): ").strip()
+            choice = input(f"\nSelect a vault to remove (1-{len(self.config.vaults)} or type 'cancel'): ").strip()
             
             if choice.lower() == 'cancel':
                 print("Vault removal cancelled.")
@@ -1450,11 +1451,11 @@ class SetupCommand:
                 
             vault_index = int(choice) - 1
             if vault_index < 0 or vault_index >= len(self.config.vaults):
-                print("❌ Invalid vault selection.")
+                print("❌ Selection not recognized—no vault removed.")
                 return
                 
         except (ValueError, KeyboardInterrupt):
-            print("❌ Invalid input or cancelled.")
+            print("❌ Input not recognized or action cancelled.")
             return
             
         vault_to_remove = self.config.vaults[vault_index]
@@ -1462,16 +1463,16 @@ class SetupCommand:
         # Get impact analysis
         impact = self.config.get_vault_removal_impact(vault_to_remove.vault_id)
         
-        print(f"\n⚠️  Impact of removing vault '{vault_to_remove.name}':")
+        print(f"\n⚠️ Impact of removing vault '{vault_to_remove.name}':")
         if impact["is_default"]:
             remaining_vaults = len(self.config.vaults) - 1
             if remaining_vaults > 0:
-                print(f"  • This is the default vault - you'll need to select a new default")
+                print("  • This vault is the current default—you’ll need to choose a new default.")
             else:
-                print(f"  • This is the only remaining vault - removal will leave you with no vaults")
+                print("  • This is the only remaining vault—removing it will leave you with none.")
                 
         if impact["mappings_cleared"] > 0:
-            print(f"  • {impact['mappings_cleared']} vault mapping(s) will be cleared")
+            print(f"  • {impact['mappings_cleared']} vault mapping(s) will be cleared.")
             
         if impact["tag_routes_cleared"] > 0:
             print(f"  • {impact['tag_routes_cleared']} tag routing rule(s) will be cleared:")
@@ -1486,10 +1487,10 @@ class SetupCommand:
                         break
                 print(f"    - Tag '{tag}' → {list_name}")
                 
-        print(f"  • Inbox file will be removed from vault (if exists)")
-        print(f"  • All sync links for this vault will be removed")
+        print("  • Inbox file will be removed from the vault if it exists.")
+        print("  • All sync links for this vault will be removed.")
         
-        confirm = input(f"\nAre you sure you want to remove '{vault_to_remove.name}'? (yes/no): ").strip().lower()
+        confirm = input(f"\nType 'yes' to remove '{vault_to_remove.name}' or press Enter to cancel: ").strip().lower()
         if confirm not in ['yes', 'y']:
             print("Vault removal cancelled.")
             return
@@ -1497,25 +1498,25 @@ class SetupCommand:
         # Handle default vault change before removal
         if impact["is_default"] and len(self.config.vaults) > 1:
             remaining_vaults = [v for v in self.config.vaults if v.vault_id != vault_to_remove.vault_id]
-            print(f"\nSelect new default vault:")
+            print("\nSelect a new default vault:")
             for i, vault in enumerate(remaining_vaults, 1):
                 print(f"  {i}. {vault.name}")
                 
             try:
-                new_default_choice = input(f"Select new default (1-{len(remaining_vaults)}): ").strip()
+                new_default_choice = input(f"Select a new default (1-{len(remaining_vaults)}): ").strip()
                 new_default_index = int(new_default_choice) - 1
                 if new_default_index < 0 or new_default_index >= len(remaining_vaults):
-                    print("❌ Invalid selection. Removal cancelled.")
+                    print("❌ Selection not recognized—removal cancelled.")
                     return
                 new_default_vault = remaining_vaults[new_default_index]
             except (ValueError, KeyboardInterrupt):
-                print("❌ Invalid input. Removal cancelled.")
+                print("❌ Input not recognized—removal cancelled.")
                 return
         else:
             new_default_vault = None
             
         # Perform the removal
-        print(f"\n🗑️  Removing vault '{vault_to_remove.name}'...")
+        print(f"\n🗑️ Removing vault '{vault_to_remove.name}'...")
         
         # Clear vault-specific data
         self._clear_vault_inbox(vault_to_remove.path, vault_to_remove.name)
@@ -1526,11 +1527,11 @@ class SetupCommand:
             # Set new default if we had to choose one
             if new_default_vault:
                 self._set_default_vault(new_default_vault.vault_id)
-                print(f"  ✓ Set '{new_default_vault.name}' as new default vault")
+                print(f"✓ Set '{new_default_vault.name}' as the new default vault.")
                 
-            print(f"  ✓ Removed vault '{vault_to_remove.name}' from configuration")
-            print(f"  ✓ Cleared {impact['mappings_cleared']} vault mapping(s)")
-            print(f"  ✓ Cleared {impact['tag_routes_cleared']} tag routing rule(s)")
+            print(f"✓ Removed vault '{vault_to_remove.name}' from the configuration.")
+            print(f"✓ Cleared {impact['mappings_cleared']} vault mapping(s).")
+            print(f"✓ Cleared {impact['tag_routes_cleared']} tag routing rule(s).")
         else:
             print(f"  ❌ Failed to remove vault from configuration")
 
@@ -1540,15 +1541,15 @@ class SetupCommand:
             print("\n❌ No Reminders lists configured to remove.")
             return
             
-        print("\n🗑️  Remove Reminders List")
+        print("\n🗑️ Remove Reminders List")
         print("\nConfigured lists:")
         
         for i, lst in enumerate(self.config.reminders_lists, 1):
             default_marker = " (default)" if lst.identifier == self.config.default_calendar_id else ""
-            print(f"  {i}. {lst.name}{default_marker}")
+            print(f"  {i}. {lst.name}{default_marker} — {lst.identifier or 'Unknown ID'}")
             
         try:
-            choice = input(f"\nSelect list to remove (1-{len(self.config.reminders_lists)}, or 'cancel'): ").strip()
+            choice = input(f"\nSelect a list to remove (1-{len(self.config.reminders_lists)} or type 'cancel'): ").strip()
             
             if choice.lower() == 'cancel':
                 print("List removal cancelled.")
@@ -1556,11 +1557,11 @@ class SetupCommand:
                 
             list_index = int(choice) - 1
             if list_index < 0 or list_index >= len(self.config.reminders_lists):
-                print("❌ Invalid list selection.")
+                print("❌ Selection not recognized—no list removed.")
                 return
                 
         except (ValueError, KeyboardInterrupt):
-            print("❌ Invalid input or cancelled.")
+            print("❌ Input not recognized or action cancelled.")
             return
             
         list_to_remove = self.config.reminders_lists[list_index]
@@ -1568,13 +1569,13 @@ class SetupCommand:
         # Get impact analysis
         impact = self.config.get_list_removal_impact(list_to_remove.identifier)
         
-        print(f"\n⚠️  Impact of removing list '{list_to_remove.name}':")
+        print(f"\n⚠️ Impact of removing list '{list_to_remove.name}':")
         if impact["is_default"]:
             remaining_lists = len(self.config.reminders_lists) - 1
             if remaining_lists > 0:
-                print(f"  • This is the default list - you'll need to select a new default")
+                print("  • This list is the current default—you’ll need to choose a new default.")
             else:
-                print(f"  • This is the only remaining list - removal will leave you with no lists")
+                print("  • This is the only remaining list—removing it will leave you with none.")
                 
         if impact["mappings_cleared"] > 0:
             print(f"  • {impact['mappings_cleared']} vault mapping(s) will be cleared:")
@@ -1582,9 +1583,9 @@ class SetupCommand:
                 print(f"    - {vault_name}")
                 
         if impact["tag_routes_cleared"] > 0:
-            print(f"  • {impact['tag_routes_cleared']} tag routing rule(s) will be cleared")
+            print(f"  • {impact['tag_routes_cleared']} tag routing rule(s) will be cleared.")
             
-        confirm = input(f"\nAre you sure you want to remove '{list_to_remove.name}'? (yes/no): ").strip().lower()
+        confirm = input(f"\nType 'yes' to remove '{list_to_remove.name}' or press Enter to cancel: ").strip().lower()
         if confirm not in ['yes', 'y']:
             print("List removal cancelled.")
             return
@@ -1592,38 +1593,38 @@ class SetupCommand:
         # Handle default list change before removal
         if impact["is_default"] and len(self.config.reminders_lists) > 1:
             remaining_lists = [lst for lst in self.config.reminders_lists if lst.identifier != list_to_remove.identifier]
-            print(f"\nSelect new default list:")
+            print("\nSelect a new default list:")
             for i, lst in enumerate(remaining_lists, 1):
-                print(f"  {i}. {lst.name}")
+                print(f"  {i}. {lst.name} — {lst.identifier or 'Unknown ID'}")
                 
             try:
-                new_default_choice = input(f"Select new default (1-{len(remaining_lists)}): ").strip()
+                new_default_choice = input(f"Select a new default (1-{len(remaining_lists)}): ").strip()
                 new_default_index = int(new_default_choice) - 1
                 if new_default_index < 0 or new_default_index >= len(remaining_lists):
-                    print("❌ Invalid selection. Removal cancelled.")
+                    print("❌ Selection not recognized—removal cancelled.")
                     return
                 new_default_list = remaining_lists[new_default_index]
             except (ValueError, KeyboardInterrupt):
-                print("❌ Invalid input. Removal cancelled.")
+                print("❌ Input not recognized—removal cancelled.")
                 return
         else:
             new_default_list = None
             
         # Perform the removal
-        print(f"\n🗑️  Removing list '{list_to_remove.name}'...")
+        print(f"\n🗑️ Removing list '{list_to_remove.name}'...")
         
         # Remove from config (this handles mappings, tag routes, and defaults)
         if self.config.remove_reminders_list(list_to_remove.identifier):
             # Set new default if we had to choose one
             if new_default_list:
                 self.config.default_calendar_id = new_default_list.identifier
-                print(f"  ✓ Set '{new_default_list.name}' as new default list")
+                print(f"✓ Set '{new_default_list.name}' as the new default list.")
                 
-            print(f"  ✓ Removed list '{list_to_remove.name}' from configuration")
-            print(f"  ✓ Cleared {impact['mappings_cleared']} vault mapping(s)")
-            print(f"  ✓ Cleared {impact['tag_routes_cleared']} tag routing rule(s)")
+            print(f"✓ Removed list '{list_to_remove.name}' from the configuration.")
+            print(f"✓ Cleared {impact['mappings_cleared']} vault mapping(s).")
+            print(f"✓ Cleared {impact['tag_routes_cleared']} tag routing rule(s).")
         else:
-            print(f"  ❌ Failed to remove list from configuration")
+            print("❌ Failed to remove list from the configuration.")
 
     @staticmethod
     def _normalize_path(path: str) -> str:
@@ -1669,16 +1670,16 @@ class SetupCommand:
         except EventKitImportError as e:
             # EventKit not available - show installation instructions
             print(f"\n❌ EventKit not available: {e}")
-            print("\n📦 To fix this, install the required dependencies:")
+            print("\n📦 Install missing EventKit dependencies with:")
             print("    pip install pyobjc pyobjc-framework-EventKit")
-            print("\nOr use the built-in installer:")
+            print("\nOr run:")
             print("    obs-sync install-deps macos")
             return []
 
         except AuthorizationError as e:
             # Authorization denied - show how to grant permissions
             print(f"\n🔒 Authorization error: {e}")
-            print("\n✅ To fix this issue, follow the instructions above.")
+            print("\n✅ Follow the steps above, then rerun the command.")
             return []
 
         except RemindersError as e:
@@ -1693,5 +1694,5 @@ class SetupCommand:
                 import traceback
                 traceback.print_exc()
             else:
-                print("\n⚠️ Could not access Apple Reminders. Run with --verbose for details.")
+                print("\n⚠️ Could not access Apple Reminders. Re-run with --verbose for diagnostic details.")
             return []

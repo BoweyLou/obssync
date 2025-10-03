@@ -35,7 +35,7 @@ class MigrateCommand:
         Returns:
             True if migration successful or no migration needed
         """
-        print("obs-sync Configuration Migration")
+        print("obs-sync Configuration Migration Assistant")
         print("=" * 50)
         
         # Show current configuration
@@ -45,61 +45,61 @@ class MigrateCommand:
         has_legacy, legacy_files = self.path_manager.get_legacy_files()
         
         if not has_legacy:
-            print("\n✅ No legacy configuration files found.")
-            print("   Your configuration is already using the current structure.")
+            print("\n✅ No legacy configuration files were found.")
+            print("   Your configuration already uses the current structure.")
             return True
         
         # Show legacy files found
-        print("\n📁 Legacy configuration files found:")
+        print("\n📁 Legacy configuration files detected:")
         for name, path in legacy_files.items():
             size = self._get_file_size(path)
             print(f"   • {name}: {path} ({size})")
         
         if check_only:
-            print("\n💡 Run 'obs-sync migrate --apply' to migrate these files.")
+            print("\n💡 Run 'obs-sync migrate --apply' to migrate them now.")
             return True
         
         # Check for conflicts
         conflicts = self._check_conflicts(legacy_files)
         if conflicts and not force:
-            print("\n⚠️  Conflicts detected - files already exist in target location:")
+            print("\n⚠️ Conflicts detected—files already exist in the target location:")
             for name, (source, target) in conflicts.items():
                 print(f"   • {name}:")
                 print(f"     Source: {source}")
                 print(f"     Target: {target}")
             
-            print("\n💡 Options:")
-            print("   1. Backup and remove target files manually, then retry")
-            print("   2. Use --force to overwrite target files")
-            print("   3. Set OBS_SYNC_HOME to use a different location")
+            print("\n💡 Resolve conflicts by:")
+            print("   1) Back up and remove target files manually, then retry")
+            print("   2) Use --force to overwrite target files")
+            print("   3) Set OBS_SYNC_HOME to choose a different location")
             return False
         
         # Confirm migration
         if not self._confirm_migration(legacy_files, conflicts, force):
-            print("\n❌ Migration cancelled.")
+            print("\n❌ Migration cancelled—no files were moved.")
             return False
         
         # Perform migration
         success = self._perform_migration(legacy_files, force)
         
         if success:
-            print("\n✅ Migration completed successfully!")
-            print(f"   Configuration is now in: {self.path_manager.working_dir}")
+            print("\n✅ Migration completed successfully.")
+            print(f"   Configuration is now stored at: {self.path_manager.working_dir}")
             
             # Offer to clean up legacy files
             if self._confirm_cleanup():
                 self._cleanup_legacy_files(legacy_files)
-                print("   Legacy files have been removed.")
+                print("   Legacy files were removed.")
             else:
-                print("   Legacy files preserved for manual review.")
+                print("   Legacy files were preserved for manual review.")
         else:
-            print("\n❌ Migration failed. Please check the errors above.")
+            print("\n❌ Migration failed—review the details above.")
         
         return success
     
     def _show_current_config(self) -> None:
         """Display current path configuration."""
-        print("\n📍 Current Configuration:")
+        print("\n📍 Current configuration paths:")
         print(f"   Tool root:        {self.path_manager.tool_root}")
         print(f"   Working directory: {self.path_manager.working_dir}")
         print(f"   Legacy directory:  {self.path_manager.legacy_dir}")
@@ -109,12 +109,12 @@ class MigrateCommand:
         if env_home:
             print(f"   OBS_SYNC_HOME:    {env_home} (active)")
         else:
-            print(f"   OBS_SYNC_HOME:    (not set)")
+            print("   OBS_SYNC_HOME:    not set")
         
         # Show if using legacy location
         if self.path_manager.working_dir == self.path_manager.legacy_dir:
-            print("\n   ⚠️  Currently using legacy location")
-            print("      Consider setting OBS_SYNC_HOME or ensuring tool directory is writable")
+            print("\n   ⚠️ Currently using the legacy location.")
+            print("      Set OBS_SYNC_HOME or ensure the tool directory is writable.")
     
     def _get_file_size(self, path: Path) -> str:
         """Get human-readable file size."""
@@ -212,16 +212,15 @@ class MigrateCommand:
                 # Handle special case: merging sync_links files
                 if name in ('sync_links', 'sync_links_data') and target_path.exists():
                     self._merge_sync_links(source_path, target_path)
-                    print(f"   ✅ Merged {name}")
+                    print(f"   ✅ Merged {name}.")
                 else:
-                    # Copy the file
                     shutil.copy2(source_path, target_path)
-                    print(f"   ✅ Migrated {name}")
+                    print(f"   ✅ Migrated {name}.")
                 
                 success_count += 1
                 
             except Exception as e:
-                print(f"   ❌ Failed to migrate {name}: {e}")
+                print(f"   ❌ Couldn’t migrate {name}: {e}")
                 error_count += 1
                 if self.verbose:
                     import traceback
@@ -240,10 +239,10 @@ class MigrateCommand:
             except Exception:
                 pass
         
-        print(f"\n📊 Migration summary:")
-        print(f"   Successfully migrated: {success_count} file(s)")
+        print("\n📊 Migration summary:")
+        print(f"   Successfully migrated: {success_count} files.")
         if error_count > 0:
-            print(f"   Failed: {error_count} file(s)")
+            print(f"   Failed: {error_count} files.")
         
         return error_count == 0
     
@@ -301,10 +300,10 @@ class MigrateCommand:
                 path.unlink()
                 
                 if self.verbose:
-                    print(f"   ✅ Removed {path}")
+                    print(f"   ✅ Removed {path}.")
                     print(f"      Backup saved as {backup_path.name}")
             except Exception as e:
-                print(f"   ⚠️  Could not remove {path}: {e}")
+                print(f"   ⚠️ Unable to remove {path}: {e}")
         
         # Try to remove empty legacy directories
         for directory in [self.path_manager.legacy_dir / "data", self.path_manager.legacy_dir]:
@@ -314,6 +313,6 @@ class MigrateCommand:
                     if not any(directory.iterdir()):
                         directory.rmdir()
                         if self.verbose:
-                            print(f"   ✅ Removed empty directory: {directory}")
+                            print(f"   ✅ Removed empty directory: {directory}.")
                 except Exception:
                     pass

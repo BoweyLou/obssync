@@ -220,20 +220,22 @@ Examples:
                 # Default to check mode if no flags specified
                 success = cmd.run(check_only=True)
                 if success:
-                    print("\n💡 Use 'obs-sync migrate --apply' to perform the migration.")
+                    print("\n💡 Run 'obs-sync migrate --apply' to perform the migration.")
             
         else:
-            print(f"Unknown command: {args.command}")
+            print(f"Unknown command '{args.command}'.")
             return 1
         
         return 0 if success else 1
         
     except KeyboardInterrupt:
-        print("\nOperation cancelled by user")
+        print("\nOperation cancelled by user.")
         return 130
     except Exception as e:
         print(f"Error: {e}")
-        if args.verbose:
+        if not args.verbose:
+            print("Re-run with --verbose for more detail.")
+        else:
             import traceback
             traceback.print_exc()
         return 1

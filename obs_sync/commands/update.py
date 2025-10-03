@@ -27,17 +27,17 @@ class UpdateCommand:
         Returns:
             True if update succeeded, False otherwise
         """
-        print("obs-sync Update")
+        print("obs-sync Update Assistant")
         print("=" * 40)
         
         # Find repo root
         repo_root = self._find_repo_root()
         if not repo_root:
-            print("\n❌ Could not find obs-sync repository.")
-            print("Manual update required:")
-            print("  1. cd /path/to/obssync")
-            print("  2. git pull")
-            print("  3. ./install.sh --extras macos")
+            print("\n❌ Could not locate the obs-sync repository.")
+            print("Manual update steps:")
+            print("  1) cd /path/to/obssync")
+            print("  2) run git pull")
+            print("  3) run ./install.sh --extras macos")
             return False
         
         print(f"\n📁 Repository: {repo_root}")
@@ -74,14 +74,14 @@ class UpdateCommand:
             status_output = result.stdout
             
             if "Your branch is up to date" in status_output:
-                print("✅ Already on latest version!")
+                print("✅ You already have the latest version.")
                 
                 # Still offer to reinstall dependencies
-                choice = input("\nReinstall dependencies anyway? (y/n) [n]: ").strip().lower()
+                choice = input("\nReinstall dependencies anyway? (y/N): ").strip().lower()
                 if choice != 'y':
                     return True
             elif "Your branch is behind" in status_output:
-                print("📥 Updates available!")
+                print("📥 Updates are available.")
                 
                 # Show what would be updated - display versions and changes
                 # Get current version tag
@@ -117,7 +117,7 @@ class UpdateCommand:
                     )
                     
                     if result.returncode == 0 and result.stdout.strip():
-                        print("\nChanges:")
+                        print("\nIncoming changes:")
                         for line in result.stdout.strip().split('\n')[:5]:
                             print(f"  • {line}")
                         if len(result.stdout.strip().split('\n')) > 5:
@@ -133,32 +133,32 @@ class UpdateCommand:
                     )
                     
                     if result.returncode == 0 and result.stdout.strip():
-                        print("\nChanges:")
+                        print("\nAdditional changes:")
                         for line in result.stdout.strip().split('\n')[:5]:
                             print(f"  • {line}")
                         if len(result.stdout.strip().split('\n')) > 5:
                             print(f"  ... and {len(result.stdout.strip().split('\n')) - 5} more")
                 
-                choice = input("\nProceed with update? (y/n) [y]: ").strip().lower()
+                choice = input("\nProceed with the update? (Y/n): ").strip().lower()
                 if choice == 'n':
-                    print("Update cancelled.")
+                    print("Update cancelled—you remain on the current version.")
                     return False
             elif "Your branch is ahead" in status_output:
-                print("⚠️  Local branch is ahead of remote.")
-                print("This usually means you have unpushed commits.")
-                choice = input("\nProceed anyway? (y/n) [n]: ").strip().lower()
+                print("⚠️ Local branch is ahead of the remote.")
+                print("You likely have unpushed commits.")
+                choice = input("\nProceed anyway? (y/N): ").strip().lower()
                 if choice != 'y':
                     return False
             else:
                 # Unknown status, proceed with caution
-                print("⚠️  Git status unclear. Proceeding with update...")
+                print("⚠️ Git status was unclear—continuing with update.")
         
         except Exception as e:
             print(f"❌ Error checking git status: {e}")
             return False
         
         # Pull latest changes
-        print("\n📥 Pulling latest changes...")
+        print("\n📥 Pulling the latest changes...")
         try:
             result = subprocess.run(
                 ["git", "pull"],
@@ -175,7 +175,7 @@ class UpdateCommand:
             if self.verbose:
                 print(result.stdout.strip())
             else:
-                print("✓ Pull complete")
+                print("✓ Pull complete.")
         
         except Exception as e:
             print(f"❌ Error during git pull: {e}")
@@ -210,10 +210,10 @@ class UpdateCommand:
             )
             
             if result.returncode != 0:
-                print("❌ Installation failed")
+                print("❌ Dependency installation failed.")
                 return False
             
-            print("✓ Dependencies reinstalled")
+            print("✓ Dependencies reinstalled.")
         
         except Exception as e:
             print(f"❌ Error during installation: {e}")
@@ -221,19 +221,19 @@ class UpdateCommand:
         
         # Check if automation is enabled and prompt to refresh
         if self.config.automation_enabled:
-            print("\n🤖 Automation is currently enabled")
-            print("If this update includes LaunchAgent changes, you should refresh it.")
+            print("\n🤖 LaunchAgent automation is currently enabled.")
+            print("If this update changes the LaunchAgent, refresh it to apply the new plist.")
             
-            choice = input("Refresh LaunchAgent automation? (y/n) [y]: ").strip().lower()
+            choice = input("Refresh LaunchAgent automation now? (Y/n): ").strip().lower()
             
             if choice != 'n':
                 print("\n💡 To refresh automation:")
-                print("  1. Run: obs-sync setup --reconfigure")
-                print("  2. Select option 8 (Automation settings)")
-                print("  3. Choose 'n' to disable, then 'y' to re-enable")
-                print("\nThis ensures the LaunchAgent picks up any plist changes.")
+                print("  1. Run obs-sync setup --reconfigure.")
+                print("  2. Select option 8 (Automation settings).")
+                print("  3. Choose 'n' to disable, then 'y' to re-enable.")
+                print("\nDoing so ensures the LaunchAgent picks up any plist changes.")
         
-        print("\n✅ Update complete!")
+        print("\n✅ Update complete.")
         return True
     
     def _find_repo_root(self) -> Optional[Path]:
