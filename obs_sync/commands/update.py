@@ -112,6 +112,16 @@ class UpdateCommand:
         # Fetch and checkout target branch
         print(f"\n🔍 Switching to {active_channel} channel...")
         try:
+            # Capture current branch before switching
+            result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            initial_branch = result.stdout.strip() if result.returncode == 0 else ""
+
             # Fetch latest from remote
             result = subprocess.run(
                 ["git", "fetch"],
@@ -166,6 +176,9 @@ class UpdateCommand:
 
             print(f"✓ Switched to {target_branch} branch")
 
+            # Detect if we actually switched branches
+            switched_branch = (initial_branch != target_branch)
+
             # Check if we're behind
             result = subprocess.run(
                 ["git", "status", "-uno"],
@@ -182,12 +195,17 @@ class UpdateCommand:
             status_output = result.stdout
             
             if "Your branch is up to date" in status_output:
-                print("✅ You already have the latest version.")
-                
-                # Still offer to reinstall dependencies
-                choice = input("\nReinstall dependencies anyway? (y/N): ").strip().lower()
-                if choice != 'y':
-                    return True
+                # Don't exit early if we just switched branches - dependencies may need reinstallation
+                if switched_branch:
+                    print(f"✓ Successfully switched to {active_channel} channel.")
+                    print("📦 Reinstalling dependencies for the new channel...")
+                else:
+                    print("✅ You already have the latest version.")
+                    
+                    # Still offer to reinstall dependencies
+                    choice = input("\nReinstall dependencies anyway? (y/N): ").strip().lower()
+                    if choice != 'y':
+                        return True
             elif "Your branch is behind" in status_output:
                 print("📥 Updates are available.")
                 
