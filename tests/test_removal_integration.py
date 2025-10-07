@@ -34,7 +34,7 @@ def test_vault_removal_integration():
     config.set_vault_mapping("personal-id", "work-list-id")
     config.set_tag_route("personal-id", "urgent", "work-list-id")
     
-    setup_cmd = SetupCommand(config, verbose=True)
+    setup_cmd = SetupCommand(config, verbose=True, enable_suggestions=False)
     
     # Mock file operations
     with patch.object(setup_cmd, '_clear_vault_inbox') as mock_clear_inbox, \
@@ -90,7 +90,7 @@ def test_list_removal_integration():
     config.set_vault_mapping("work-id", "personal-list-id")
     config.set_tag_route("work-id", "home", "personal-list-id")
     
-    setup_cmd = SetupCommand(config, verbose=True)
+    setup_cmd = SetupCommand(config, verbose=True, enable_suggestions=False)
     
     with patch('builtins.input') as mock_input, \
          patch('builtins.print'):
@@ -129,7 +129,7 @@ def test_cancellation_handling():
         Vault(name="Work", path="/tmp/work", vault_id="work-id")
     ]
     
-    setup_cmd = SetupCommand(config, verbose=True)
+    setup_cmd = SetupCommand(config, verbose=True, enable_suggestions=False)
     
     with patch('builtins.input') as mock_input, \
          patch('builtins.print'):

@@ -11,15 +11,27 @@ from typing import List, Optional, Set
 from obs_sync.core.models import SyncConfig, Vault, RemindersList
 from obs_sync.obsidian.tasks import ObsidianTaskManager
 from obs_sync.obsidian.vault import find_vaults
+from obs_sync.utils.suggestions import (
+    SuggestionAnalyzer,
+    VaultMappingSuggestion,
+    TagRouteSuggestion,
+)
 
 
 class SetupCommand:
     """Interactive setup command."""
 
-    def __init__(self, config: SyncConfig, verbose: bool = False):
-        """Initialize setup command."""
+    def __init__(self, config: SyncConfig, verbose: bool = False, enable_suggestions: bool = True):
+        """Initialize setup command.
+        
+        Args:
+            config: Sync configuration
+            verbose: Enable verbose output
+            enable_suggestions: Enable smart routing suggestions (disable for testing)
+        """
         self.config = config
         self.verbose = verbose
+        self.enable_suggestions = enable_suggestions
 
     def run(self, reconfigure: bool = False, add: bool = False) -> bool:
         """Run interactive setup or additive flow."""
@@ -39,6 +51,22 @@ class SetupCommand:
 
         return self._run_full_setup(reconfigure=reconfigure)
 
+    def _show_backup_warning(self) -> bool:
+        """Show backup warning and get user confirmation.
+
+        Returns:
+            True if user confirms, False otherwise
+        """
+        print("\n⚠️  BACKUP REMINDER")
+        print("=" * 40)
+        print("obs-sync will modify your Obsidian vaults and Apple Reminders.")
+        print("Before proceeding, ensure you have backups of:")
+        print("  • Your Obsidian vaults")
+        print("  • Your Apple Reminders lists")
+        print()
+        confirm = input("Continue with setup? (y/N): ").strip().lower()
+        return confirm == 'y'
+
     def _run_full_setup(self, reconfigure: bool) -> bool:
         """Run the full interactive setup."""
         if self.config.vaults and not reconfigure:
@@ -48,6 +76,12 @@ class SetupCommand:
         # If reconfiguring and already have config, ask whether to reset or amend
         if reconfigure and self.config.vaults:
             return self._handle_reconfigure_choice()
+
+        # Show backup warning for first-time setup
+        if not self.config.vaults:
+            if not self._show_backup_warning():
+                print("\nSetup cancelled. No changes were made.")
+                return False
 
         # Store existing vault IDs so we can preserve stable identifiers when reselecting vault paths
         existing_vault_ids = {}
@@ -154,39 +188,50 @@ class SetupCommand:
 
             for vault in self.config.vaults:
                 print(f"\nVault: {vault.name}")
-                print("Available lists:")
-                for i, lst in enumerate(self.config.reminders_lists, 1):
-                    print(f"  {i}. {lst.name} — {lst.identifier or 'Unknown ID'}")
-
-                # Default to first list or existing mapping
-                existing_mapping = self.config.get_vault_mapping(vault.vault_id)
-                default_choice = 1
-                if existing_mapping:
-                    # Find index of existing mapping
+                
+                # Try to offer smart suggestions first (optional)
+                suggested_list_id = None
+                if self.enable_suggestions and len(self.config.reminders_lists) > 1:
+                    suggested_list_id = self._offer_vault_mapping_suggestions(vault)
+                
+                # If no suggestion accepted, proceed with manual selection
+                if not suggested_list_id:
+                    print("Available lists:")
                     for i, lst in enumerate(self.config.reminders_lists, 1):
-                        if lst.identifier == existing_mapping:
-                            default_choice = i
-                            break
+                        print(f"  {i}. {lst.name} — {lst.identifier or 'Unknown ID'}")
 
-                choice_input = input(f"Select a Reminders list for this vault [{default_choice}] (Enter to accept default): ").strip()
+                    # Default to first list or existing mapping
+                    existing_mapping = self.config.get_vault_mapping(vault.vault_id)
+                    default_choice = 1
+                    if existing_mapping:
+                        # Find index of existing mapping
+                        for i, lst in enumerate(self.config.reminders_lists, 1):
+                            if lst.identifier == existing_mapping:
+                                default_choice = i
+                                break
 
-                if choice_input:
-                    try:
-                        choice = int(choice_input)
-                    except ValueError:
+                    choice_input = input(f"Select a Reminders list for this vault [{default_choice}] (Enter to accept default): ").strip()
+
+                    if choice_input:
+                        try:
+                            choice = int(choice_input)
+                        except ValueError:
+                            choice = default_choice
+                    else:
                         choice = default_choice
-                else:
-                    choice = default_choice
 
-                if 1 <= choice <= len(self.config.reminders_lists):
-                    selected_list = self.config.reminders_lists[choice - 1]
-                    self.config.set_vault_mapping(vault.vault_id, selected_list.identifier)
-                    print(f"✓ Mapped to {selected_list.name}.")
-                else:
-                    # Default to first list if invalid choice
-                    selected_list = self.config.reminders_lists[0]
-                    self.config.set_vault_mapping(vault.vault_id, selected_list.identifier)
-                    print(f"✓ Mapped to {selected_list.name} (default).")
+                    if 1 <= choice <= len(self.config.reminders_lists):
+                        selected_list = self.config.reminders_lists[choice - 1]
+                        suggested_list_id = selected_list.identifier
+                    else:
+                        # Default to first list if invalid choice
+                        selected_list = self.config.reminders_lists[0]
+                        suggested_list_id = selected_list.identifier
+                
+                # Apply the mapping
+                self.config.set_vault_mapping(vault.vault_id, suggested_list_id)
+                list_name = self._get_list_name(suggested_list_id)
+                print(f"✓ Mapped to {list_name}.")
 
                 self._configure_tag_routes(vault)
 
@@ -211,6 +256,9 @@ class SetupCommand:
         print("Sync Apple Calendar events to daily notes? (y/N): ", end="")
         calendar_input = input().strip().lower()
         self.config.sync_calendar_events = calendar_input == 'y'
+
+        # Automation setup (macOS only)
+        self._prompt_automation_setup(is_initial_setup=True)
 
         print("\n✅ Setup complete")
         print("\nNext steps:")
@@ -459,6 +507,18 @@ class SetupCommand:
             current_list_name = self._get_list_name(current_mapping) if current_mapping else "None"
             
             print(f"\nVault: {vault.name} (currently: {current_list_name})")
+            
+            # Offer smart suggestions (optional)
+            if self.enable_suggestions and len(self.config.reminders_lists) > 1:
+                show_suggestion = input("   Show smart suggestion? (y/N): ").strip().lower()
+                if show_suggestion == 'y':
+                    suggested_list_id = self._offer_vault_mapping_suggestions(vault)
+                    if suggested_list_id:
+                        self.config.set_vault_mapping(vault.vault_id, suggested_list_id)
+                        list_name = self._get_list_name(suggested_list_id)
+                        print(f"✓ Updated mapping to {list_name}.")
+                        continue
+            
             print("Available lists:")
             for i, lst in enumerate(self.config.reminders_lists, 1):
                 current_marker = " (current)" if lst.identifier == current_mapping else ""
@@ -558,57 +618,73 @@ class SetupCommand:
         else:
             print("⚠️ Invalid choice. No changes made.")
     
-    def _amend_automation(self) -> None:
-        """Amend automation settings (macOS LaunchAgent)."""
+    def _prompt_automation_setup(self, is_initial_setup: bool = False) -> None:
+        """Prompt for and configure automation settings (shared helper).
+
+        Args:
+            is_initial_setup: If True, uses first-run defaults and messaging
+        """
         from ..utils.launchd import (
             is_macos, is_agent_loaded, load_agent, unload_agent,
             install_agent, uninstall_agent, get_obs_sync_executable,
             describe_interval, get_launchagent_path
         )
         from ..core.paths import get_path_manager
-        
+
         if not is_macos():
-            print("\n⚠️  Automation via LaunchAgent is only available on macOS.")
+            if not is_initial_setup:  # Only show warning in reconfigure
+                print("\n⚠️  Automation via LaunchAgent is only available on macOS.")
             return
-        
+
         # Show current status
         current_enabled = self.config.automation_enabled
         current_interval = self.config.automation_interval
         agent_loaded = is_agent_loaded()
-        
-        print(f"\n🤖 Automation Settings (macOS LaunchAgent)")
-        print(f"  Configuration: {('enabled' if current_enabled else 'disabled')}")
-        print(f"  Schedule: {describe_interval(current_interval)}")
-        print(f"  LaunchAgent: {('loaded' if agent_loaded else 'not loaded')}")
-        
-        if agent_loaded and not current_enabled:
-            print("\n⚠️  LaunchAgent is loaded but config shows disabled - they're out of sync")
-        elif not agent_loaded and current_enabled:
-            print("\n⚠️  Config shows enabled but LaunchAgent is not loaded - they're out of sync")
-        
+
+        if is_initial_setup:
+            print("\n🤖 Automation (optional)")
+            print("Schedule obs-sync to run automatically in the background.")
+            print(f"Current setting: {('enabled' if current_enabled else 'disabled')}")
+        else:
+            print(f"\n🤖 Automation Settings (macOS LaunchAgent)")
+            print(f"  Configuration: {('enabled' if current_enabled else 'disabled')}")
+            print(f"  Schedule: {describe_interval(current_interval)}")
+            print(f"  LaunchAgent: {('loaded' if agent_loaded else 'not loaded')}")
+
+            if agent_loaded and not current_enabled:
+                print("\n⚠️  LaunchAgent is loaded but config shows disabled - they're out of sync")
+            elif not agent_loaded and current_enabled:
+                print("\n⚠️  Config shows enabled but LaunchAgent is not loaded - they're out of sync")
+
         # Prompt for enable/disable
-        print("\nAutomation runs 'obs-sync sync --apply' on the schedule you choose.")
-        action = "disable" if current_enabled else "enable"
-        default_choice = "n" if current_enabled else "y"
-        
-        prompt_text = "Disable automation now?" if current_enabled else "Enable automation now?"
-        choice = input(f"{prompt_text} (y/{default_choice.upper()}): ").strip().lower()
-        
+        if is_initial_setup:
+            print("\nAutomation runs 'obs-sync sync --apply' on a schedule.")
+            prompt_text = "Enable automation? (y/N): "
+            default_choice = "n"
+        else:
+            print("\nAutomation runs 'obs-sync sync --apply' on the schedule you choose.")
+            action = "disable" if current_enabled else "enable"
+            default_choice = "n" if current_enabled else "y"
+            prompt_text = "Disable automation now?" if current_enabled else "Enable automation now?"
+            prompt_text += f" (y/{default_choice.upper()}): "
+
+        choice = input(prompt_text).strip().lower()
+
         if not choice:
             choice = default_choice
-        
+
         if choice == 'n':
             if current_enabled or agent_loaded:
                 # Disable automation
                 print("\n🛑 Disabling automation...")
-                
+
                 if agent_loaded:
                     success, error = unload_agent()
                     if success:
                         print("✓ LaunchAgent unloaded.")
                     else:
                         print(f"⚠️ Failed to unload LaunchAgent: {error}")
-                
+
                 plist_path = get_launchagent_path()
                 if plist_path.exists():
                     success, error = uninstall_agent()
@@ -616,26 +692,28 @@ class SetupCommand:
                         print(f"✓ Removed LaunchAgent plist - {plist_path}.")
                     else:
                         print(f"⚠️ Failed to remove plist: {error}")
-                
+
                 self.config.automation_enabled = False
                 print("✓ Automation disabled in configuration.")
             else:
-                print("Automation is already disabled.")
+                if not is_initial_setup:
+                    print("Automation is already disabled.")
             return
-        
+
         elif choice != 'y':
-            print("⚠️ Invalid choice. No changes made.")
+            if not is_initial_setup:
+                print("⚠️ Invalid choice. No changes made.")
             return
-        
+
         # User wants to enable automation
         print("\n⚙️ Configuring automation schedule...")
         print("\nAvailable schedules:")
         print("  1) Hourly (every 3600 seconds) [recommended]")
         print("  2) Twice daily (every 43,200 seconds / 12 hours)")
         print("  3) Custom interval (specify seconds)")
-        
+
         schedule_choice = input("Choose a schedule [default 1]: ").strip()
-        
+
         if not schedule_choice or schedule_choice == '1':
             interval = 3600  # Hourly
         elif schedule_choice == '2':
@@ -656,60 +734,69 @@ class SetupCommand:
         else:
             print("⚠️ Invalid choice. Using default (hourly).")
             interval = 3600
-        
+
         print(f"\n  Selected: {describe_interval(interval)}")
-        
+
         # Find obs-sync executable
         obs_sync_path = get_obs_sync_executable()
         if not obs_sync_path:
             print("\n⚠️ obs-sync executable not found.")
             print("Install obs-sync and confirm it appears in your PATH, then retry.")
             return
-        
+
         print(f"✓ Using executable: {obs_sync_path}.")
-        
+
         # Get log directory
         path_manager = get_path_manager()
         log_dir = path_manager.log_dir
-        
+
         # Unload existing agent if loaded
         if agent_loaded:
             print("\n  Unloading existing LaunchAgent...")
             success, error = unload_agent()
             if not success:
                 print(f"⚠️ Warning: Failed to unload the existing agent: {error}")
-        
+
         # Install the LaunchAgent plist
         print("\n  Installing LaunchAgent...")
         success, error = install_agent(interval, obs_sync_path, log_dir)
-        
+
         if not success:
             print(f"  ✗ Failed to install LaunchAgent: {error}")
             return
-        
+
         print(f"✓ LaunchAgent plist created at {get_launchagent_path()}.")
-        
+
         # Load the agent
         print("  Loading LaunchAgent...")
         success, error = load_agent()
-        
+
         if not success:
             print(f"  ✗ Failed to load LaunchAgent: {error}")
             return
-        
+
         print("✓ LaunchAgent loaded and scheduled.")
-        
+
         # Update config
         self.config.automation_enabled = True
         self.config.automation_interval = interval
-        
+
         print(f"\n✅ Automation enabled! obs-sync will run {describe_interval(interval)}")
         print(f"   Logs: {log_dir}/obs-sync-agent.stdout.log")
         print(f"         {log_dir}/obs-sync-agent.stderr.log")
+
+    def _amend_automation(self) -> None:
+        """Amend automation settings (macOS LaunchAgent)."""
+        self._prompt_automation_setup(is_initial_setup=False)
     
     def _continue_full_setup(self) -> bool:
         """Continue with the original full setup flow after reset choice."""
         # This contains the original setup logic that was in _run_full_setup
+
+        # Show backup warning
+        if not self._show_backup_warning():
+            print("\nSetup cancelled. No changes were made.")
+            return False
 
         # Store existing vault IDs for preservation
         existing_vault_ids = {}
@@ -816,39 +903,50 @@ class SetupCommand:
 
             for vault in self.config.vaults:
                 print(f"\nVault: {vault.name}")
-                print("Available lists:")
-                for i, lst in enumerate(self.config.reminders_lists, 1):
-                    print(f"  {i}. {lst.name} — {lst.identifier or 'Unknown ID'}")
-
-                # Default to first list or existing mapping
-                existing_mapping = self.config.get_vault_mapping(vault.vault_id)
-                default_choice = 1
-                if existing_mapping:
-                    # Find index of existing mapping
+                
+                # Try to offer smart suggestions first (optional)
+                suggested_list_id = None
+                if self.enable_suggestions and len(self.config.reminders_lists) > 1:
+                    suggested_list_id = self._offer_vault_mapping_suggestions(vault)
+                
+                # If no suggestion accepted, proceed with manual selection
+                if not suggested_list_id:
+                    print("Available lists:")
                     for i, lst in enumerate(self.config.reminders_lists, 1):
-                        if lst.identifier == existing_mapping:
-                            default_choice = i
-                            break
+                        print(f"  {i}. {lst.name} — {lst.identifier or 'Unknown ID'}")
 
-                choice_input = input(f"Select a Reminders list for this vault [{default_choice}] (Enter to accept default): ").strip()
+                    # Default to first list or existing mapping
+                    existing_mapping = self.config.get_vault_mapping(vault.vault_id)
+                    default_choice = 1
+                    if existing_mapping:
+                        # Find index of existing mapping
+                        for i, lst in enumerate(self.config.reminders_lists, 1):
+                            if lst.identifier == existing_mapping:
+                                default_choice = i
+                                break
 
-                if choice_input:
-                    try:
-                        choice = int(choice_input)
-                    except ValueError:
+                    choice_input = input(f"Select a Reminders list for this vault [{default_choice}] (Enter to accept default): ").strip()
+
+                    if choice_input:
+                        try:
+                            choice = int(choice_input)
+                        except ValueError:
+                            choice = default_choice
+                    else:
                         choice = default_choice
-                else:
-                    choice = default_choice
 
-                if 1 <= choice <= len(self.config.reminders_lists):
-                    selected_list = self.config.reminders_lists[choice - 1]
-                    self.config.set_vault_mapping(vault.vault_id, selected_list.identifier)
-                    print(f"✓ Mapped to {selected_list.name}.")
-                else:
-                    # Default to first list if invalid choice
-                    selected_list = self.config.reminders_lists[0]
-                    self.config.set_vault_mapping(vault.vault_id, selected_list.identifier)
-                    print(f"✓ Mapped to {selected_list.name} (default).")
+                    if 1 <= choice <= len(self.config.reminders_lists):
+                        selected_list = self.config.reminders_lists[choice - 1]
+                        suggested_list_id = selected_list.identifier
+                    else:
+                        # Default to first list if invalid choice
+                        selected_list = self.config.reminders_lists[0]
+                        suggested_list_id = selected_list.identifier
+                
+                # Apply the mapping
+                self.config.set_vault_mapping(vault.vault_id, suggested_list_id)
+                list_name = self._get_list_name(suggested_list_id)
+                print(f"✓ Mapped to {list_name}.")
 
                 self._configure_tag_routes(vault)
 
@@ -869,15 +967,18 @@ class SetupCommand:
         include_input = input().strip().lower()
         self.config.include_completed = include_input == 'y'
 
-        print("\n✅ Setup complete")
-        print("\nNext steps:")
-        print("  1. Run 'obs-sync sync' to review changes")
-        print("  2. Run 'obs-sync sync --apply' to apply changes")
-
         # Calendar sync
         print("Sync Apple Calendar events to daily notes? (y/N): ", end="")
         calendar_input = input().strip().lower()
         self.config.sync_calendar_events = calendar_input == 'y'
+
+        # Automation setup (macOS only)
+        self._prompt_automation_setup(is_initial_setup=True)
+
+        print("\n✅ Setup complete")
+        print("\nNext steps:")
+        print("  1. Run 'obs-sync sync' to review changes")
+        print("  2. Run 'obs-sync sync --apply' to apply changes")
 
         return True
     
@@ -1168,7 +1269,20 @@ class SetupCommand:
             return
 
         print(f"\n🏷️  Tag routing for {vault.name}")
-        print("   Press Enter to skip or map tags to specific Reminders lists.")
+        
+        # Offer smart suggestions first (optional)
+        suggestions_accepted = False
+        if self.enable_suggestions:
+            default_list_id = self.config.get_vault_mapping(vault.vault_id)
+            suggestions_accepted = self._offer_tag_route_suggestions(vault, default_list_id)
+        
+        # Allow manual configuration
+        if suggestions_accepted:
+            proceed = input("\n   Configure additional tag routes manually? (y/N): ").strip().lower()
+            if proceed != 'y':
+                return
+        else:
+            print("   Press Enter to skip or map tags to specific Reminders lists.")
 
         while True:
             current_routes = self.config.get_tag_routes_for_vault(vault.vault_id)
@@ -1347,6 +1461,135 @@ class SetupCommand:
             if lst.identifier == identifier:
                 return lst.name
         return identifier
+    
+    def _offer_vault_mapping_suggestions(
+        self,
+        vault: Vault,
+    ) -> Optional[str]:
+        """
+        Offer smart vault→list mapping suggestions based on historical data.
+        
+        Args:
+            vault: The vault to analyze
+            
+        Returns:
+            Selected list ID if user accepts a suggestion, None otherwise
+        """
+        try:
+            print(f"\n💡 Analyzing task history for smart suggestions...")
+            analyzer = SuggestionAnalyzer(self.config, logger=None)
+            suggestions = analyzer.analyze_vault_mapping_suggestions(vault, min_confidence=0.3)
+            
+            if not suggestions:
+                if self.verbose:
+                    print("   No suggestions available (insufficient historical data).")
+                return None
+            
+            # Show top suggestion
+            top = suggestions[0]
+            confidence_pct = int(top.confidence * 100)
+            
+            print(f"\n✨ Suggested mapping: {top.suggested_list_name}")
+            print(f"   Confidence: {confidence_pct}%")
+            print(f"   Reason: {top.reasoning}")
+            
+            response = input("\n   Accept this suggestion? (y/N): ").strip().lower()
+            if response == 'y':
+                return top.suggested_list_id
+                
+        except Exception as e:
+            if self.verbose:
+                print(f"   Could not generate suggestions: {e}")
+                traceback.print_exc()
+        
+        return None
+    
+    def _offer_tag_route_suggestions(
+        self,
+        vault: Vault,
+        default_list_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Offer smart tag→list route suggestions based on historical data.
+        
+        Args:
+            vault: The vault to analyze
+            default_list_id: Default list ID to exclude from suggestions
+            
+        Returns:
+            True if user accepted suggestions, False otherwise
+        """
+        try:
+            print(f"\n💡 Analyzing tag patterns for smart routing suggestions...")
+            analyzer = SuggestionAnalyzer(self.config, logger=None)
+            suggestions = analyzer.analyze_tag_route_suggestions(
+                vault,
+                default_list_id=default_list_id,
+                min_frequency=3,
+                min_confidence=0.4,
+            )
+            
+            if not suggestions:
+                if self.verbose:
+                    print("   No tag route suggestions available.")
+                return False
+            
+            # Show suggestions
+            print(f"\n✨ Found {len(suggestions)} suggested tag route(s):")
+            for idx, sugg in enumerate(suggestions[:5], 1):  # Show top 5
+                confidence_pct = int(sugg.confidence * 100)
+                print(f"\n   {idx}. #{sugg.tag} → {sugg.suggested_list_name}")
+                print(f"      Confidence: {confidence_pct}%")
+                print(f"      {sugg.reasoning}")
+            
+            if len(suggestions) > 5:
+                print(f"\n   ... and {len(suggestions) - 5} more")
+            
+            print("\nOptions:")
+            print("  1. Accept all suggestions")
+            print("  2. Review and accept individually")
+            print("  3. Skip suggestions (configure manually)")
+            
+            choice = input("\nYour choice [3]: ").strip()
+            
+            if choice == '1':
+                # Accept all
+                for sugg in suggestions:
+                    self.config.set_tag_route(
+                        vault.vault_id,
+                        sugg.tag,
+                        sugg.suggested_list_id,
+                        import_mode="existing_only"
+                    )
+                print(f"\n✓ Applied {len(suggestions)} tag route(s).")
+                return True
+                
+            elif choice == '2':
+                # Review individually
+                applied = 0
+                for sugg in suggestions:
+                    confidence_pct = int(sugg.confidence * 100)
+                    print(f"\n#{sugg.tag} → {sugg.suggested_list_name} ({confidence_pct}% confidence)")
+                    accept = input("   Accept? (y/N): ").strip().lower()
+                    if accept == 'y':
+                        self.config.set_tag_route(
+                            vault.vault_id,
+                            sugg.tag,
+                            sugg.suggested_list_id,
+                            import_mode="existing_only"
+                        )
+                        applied += 1
+                        
+                if applied > 0:
+                    print(f"\n✓ Applied {applied} tag route(s).")
+                    return True
+            
+        except Exception as e:
+            if self.verbose:
+                print(f"   Could not generate tag route suggestions: {e}")
+                traceback.print_exc()
+        
+        return False
 
     def _handle_default_vault_change(self, new_vaults: List[Vault]) -> None:
         """Optionally update the default vault after additions."""

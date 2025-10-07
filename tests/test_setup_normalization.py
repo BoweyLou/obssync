@@ -45,7 +45,7 @@ def test_setup_preserves_vault_ids():
         print(f"  Vault2: {legacy_id2}")
         
         # Create setup command
-        setup_cmd = SetupCommand(config, verbose=True)
+        setup_cmd = SetupCommand(config, verbose=True, enable_suggestions=False)
         
         # Build legacy vault map
         legacy_map = setup_cmd._build_legacy_vault_map()
@@ -90,7 +90,7 @@ def test_vault_path_normalization():
         (vault_path / ".obsidian").mkdir()
         
         config = SyncConfig()
-        setup_cmd = SetupCommand(config)
+        setup_cmd = SetupCommand(config, enable_suggestions=False)
         
         # Test with various path formats
         test_paths = [
@@ -153,7 +153,7 @@ def test_manual_vault_addition():
         vault_path.mkdir()
         
         config = SyncConfig()
-        setup_cmd = SetupCommand(config)
+        setup_cmd = SetupCommand(config, enable_suggestions=False)
         
         # Test _prompt_manual_vaults with mock input
         existing_paths = set()
@@ -200,7 +200,7 @@ def test_vault_path_validation():
         new_path = Path(tmpdir) / "NewLocation"
         new_path.mkdir()
         
-        setup_cmd = SetupCommand(config, verbose=True)
+        setup_cmd = SetupCommand(config, verbose=True, enable_suggestions=False)
         
         # Test amendment with moved vault
         with patch('builtins.input', side_effect=[
@@ -272,7 +272,7 @@ def test_reset_clears_state():
         assert len(config.tag_routes) == 1, "Tag routes should exist initially"
         
         # Create setup command and run reset
-        setup_cmd = SetupCommand(config, verbose=True)
+        setup_cmd = SetupCommand(config, verbose=True, enable_suggestions=False)
         
         # Mock path manager and user inputs
         with patch('obs_sync.commands.setup.get_path_manager', return_value=MockPathManager()):

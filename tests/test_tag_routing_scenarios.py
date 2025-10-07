@@ -291,7 +291,7 @@ def test_scenario_2_reset_preserves_vault_ids():
             return [default_list, project_list]
         
         # Test the setup command with reset
-        setup_cmd = SetupCommand(loaded_config)
+        setup_cmd = SetupCommand(loaded_config, enable_suggestions=False)
         
         with patch.object(setup_cmd, '_discover_vaults', side_effect=mock_discover_vaults):
             with patch.object(setup_cmd, '_discover_reminders_lists', side_effect=mock_discover_reminders):

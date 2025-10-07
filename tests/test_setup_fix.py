@@ -24,7 +24,7 @@ def test_new_lists_available_for_vault_mapping():
                      source_type="local", color="blue", allows_modification=True)
     ]
     
-    setup_cmd = SetupCommand(config, verbose=True)
+    setup_cmd = SetupCommand(config, verbose=True, enable_suggestions=False)
     
     # Mock the collection methods to return new data
     new_vault = Vault(name="NewVault", path="/new/path", vault_id="new-id")
@@ -88,7 +88,7 @@ def test_reconfigure_amend_flow():
     config.set_vault_mapping("work-id", "work-list-id")
     config.set_vault_mapping("personal-id", "personal-list-id")
     
-    setup_cmd = SetupCommand(config, verbose=True)
+    setup_cmd = SetupCommand(config, verbose=True, enable_suggestions=False)
     
     # Test choosing amend option
     with patch('builtins.input') as mock_input, \
@@ -129,7 +129,7 @@ def test_reconfigure_reset_flow():
         Vault(name="Existing", path="/existing", vault_id="existing-id")
     ]
     
-    setup_cmd = SetupCommand(config, verbose=True)
+    setup_cmd = SetupCommand(config, verbose=True, enable_suggestions=False)
     
     with patch('builtins.input') as mock_input, \
          patch('builtins.print') as mock_print, \
@@ -170,7 +170,7 @@ def test_amend_default_selections():
     ]
     config.default_calendar_id = "list1-id"
     
-    setup_cmd = SetupCommand(config, verbose=True)
+    setup_cmd = SetupCommand(config, verbose=True, enable_suggestions=False)
     
     # Test changing default vault
     with patch('builtins.input', return_value='2'), \
@@ -216,7 +216,7 @@ def test_vault_removal():
     config.set_tag_route("personal-id", "urgent", "work-list-id")
     config.set_tag_route("personal-id", "home", "personal-list-id")
     
-    setup_cmd = SetupCommand(config, verbose=True)
+    setup_cmd = SetupCommand(config, verbose=True, enable_suggestions=False)
     
     # Mock the cleanup methods
     with patch.object(setup_cmd, '_clear_vault_inbox') as mock_clear_inbox, \
@@ -263,7 +263,7 @@ def test_vault_removal_default_handling():
     ]
     config.default_vault_id = "work-id"
     
-    setup_cmd = SetupCommand(config, verbose=True)
+    setup_cmd = SetupCommand(config, verbose=True, enable_suggestions=False)
     
     # Mock the cleanup methods
     with patch.object(setup_cmd, '_clear_vault_inbox'), \
@@ -317,7 +317,7 @@ def test_reminders_list_removal():
     config.set_vault_mapping("personal-id", "personal-list-id")
     config.set_tag_route("work-id", "urgent", "personal-list-id")
     
-    setup_cmd = SetupCommand(config, verbose=True)
+    setup_cmd = SetupCommand(config, verbose=True, enable_suggestions=False)
     
     with patch('builtins.input') as mock_input, \
          patch('builtins.print') as mock_print:
