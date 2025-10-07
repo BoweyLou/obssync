@@ -84,11 +84,14 @@ class CalendarGateway:
                            calendar_ids: Optional[List[str]] = None) -> List[CalendarEvent]:
         """Get calendar events for a specific date."""
         store = self._get_store()
-        
+
+        # Get system local timezone for proper time display
+        local_tz = datetime.now().astimezone().tzinfo
+
         # Create date range
         start = datetime.combine(target_date, datetime.min.time())
         end = start + timedelta(days=1)
-        
+
         # Get calendars
         all_cals = store.calendarsForEntityType_(self._EKEntityTypeEvent) or []
         if calendar_ids:
@@ -96,19 +99,19 @@ class CalendarGateway:
                         if str(c.calendarIdentifier()) in calendar_ids]
         else:
             calendars = all_cals
-        
+
         # Create predicate
         from Foundation import NSDate
         start_ns = NSDate.dateWithTimeIntervalSince1970_(start.timestamp())
         end_ns = NSDate.dateWithTimeIntervalSince1970_(end.timestamp())
-        
+
         predicate = store.predicateForEventsWithStartDate_endDate_calendars_(
             start_ns, end_ns, calendars
         )
-        
+
         # Fetch events
         events = store.eventsMatchingPredicate_(predicate) or []
-        
+
         # Convert to CalendarEvent
         result = []
         for event in events:
@@ -116,30 +119,30 @@ class CalendarGateway:
                 # Extract data
                 event_id = str(event.eventIdentifier())
                 title = str(event.title() or 'Untitled')
-                
-                # Times
+
+                # Times - use local timezone for proper display
                 start_time = None
                 end_time = None
                 if event.startDate():
                     start_time = datetime.fromtimestamp(
                         event.startDate().timeIntervalSince1970(),
-                        tz=timezone.utc
+                        tz=local_tz
                     )
                 if event.endDate():
                     end_time = datetime.fromtimestamp(
                         event.endDate().timeIntervalSince1970(),
-                        tz=timezone.utc
+                        tz=local_tz
                     )
-                
+
                 # Other fields
                 location = str(event.location()) if event.location() else None
                 notes = str(event.notes()) if event.notes() else None
                 is_all_day = bool(event.isAllDay())
-                
+
                 # Calendar name
                 cal = event.calendar()
                 calendar_name = str(cal.title()) if cal else 'Unknown'
-                
+
                 result.append(CalendarEvent(
                     event_id=event_id,
                     title=title,
@@ -150,12 +153,12 @@ class CalendarGateway:
                     is_all_day=is_all_day,
                     calendar_name=calendar_name
                 ))
-                
+
             except Exception as e:
                 self.logger.warning(f"Failed to process event: {e}")
                 continue
-        
-        # Sort by start time
-        result.sort(key=lambda e: e.start_time or datetime.min.replace(tzinfo=timezone.utc))
-        
+
+        # Sort by start time (use local timezone for comparison)
+        result.sort(key=lambda e: e.start_time or datetime.min.replace(tzinfo=local_tz))
+
         return result
