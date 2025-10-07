@@ -3,7 +3,7 @@
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from obs_sync.core.config import SyncConfig
 
@@ -101,13 +101,8 @@ class UpdateCommand:
                 print(f"❌ git status failed: {result.stderr.strip()}")
                 return False
 
-            if result.stdout.strip():
-                print("❌ Repository has uncommitted changes. Please commit or stash them first.")
-                print("\nUncommitted changes:")
-                for line in result.stdout.strip().split('\n')[:10]:
-                    print(f"  {line}")
-                if len(result.stdout.strip().split('\n')) > 10:
-                    print(f"  ... and {len(result.stdout.strip().split('\n')) - 10} more")
+            status_lines = [line for line in result.stdout.splitlines() if line.strip()]
+            if status_lines and not self._handle_uncommitted_changes(status_lines):
                 return False
 
         except Exception as e:
@@ -347,6 +342,36 @@ class UpdateCommand:
                 print("\nDoing so ensures the LaunchAgent picks up any plist changes.")
         
         print("\n✅ Update complete.")
+        return True
+    
+    def _handle_uncommitted_changes(self, status_lines: List[str]) -> bool:
+        """Warn about uncommitted changes and prompt whether to proceed."""
+        # Split out tracked (anything except '??') so we can warn appropriately.
+        tracked_changes = [line for line in status_lines if not line.startswith("??")]
+
+        print("⚠️ Repository has uncommitted changes.")
+        print("\nUncommitted changes:")
+        for line in status_lines[:10]:
+            print(f"  {line}")
+        if len(status_lines) > 10:
+            print(f"  ... and {len(status_lines) - 10} more")
+
+        if tracked_changes:
+            print(
+                "\nTracked files have pending modifications which could conflict with the update."
+            )
+            choice = input("Proceed anyway? (y/N): ").strip().lower()
+            if choice != 'y':
+                print("Update cancelled—you still have local changes.")
+                return False
+            return True
+
+        # Only untracked files are present (git status lines start with '??').
+        print("\nOnly untracked files detected; they will be left unchanged.")
+        choice = input("Proceed with update? (Y/n): ").strip().lower()
+        if choice == 'n':
+            print("Update cancelled at your request.")
+            return False
         return True
     
     def _find_repo_root(self) -> Optional[Path]:
