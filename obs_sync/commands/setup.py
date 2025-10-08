@@ -458,12 +458,13 @@ class SetupCommand:
             ("8", "Remove a vault", self._remove_vault),
             ("9", "Remove a Reminders list", self._remove_reminders_list),
             ("10", "Automation settings (macOS LaunchAgent)", self._amend_automation),
+            ("11", "Insights and analytics settings", self._amend_insights_settings),
         ]
 
         for key, label, _ in menu_options:
             print(f"  {key}. {label}")
-        print("  11. Do everything in options 1-5 and 10")
-        print("  12. Cancel")
+        print("  12. Do everything in options 1-5, 10, and 11")
+        print("  13. Cancel")
 
         choice = input("\nSelect options (comma-separated, e.g. '1,2' or 'all'): ").strip()
         if not choice:
@@ -471,12 +472,12 @@ class SetupCommand:
             return True
 
         lower_choice = choice.lower()
-        if lower_choice == 'cancel' or choice == '12':
+        if lower_choice == 'cancel' or choice == '13':
             print("\nAmendment cancelled.")
             return True
 
-        if lower_choice == 'all' or choice == '11':
-            selected_keys = ['1', '2', '3', '4', '5', '10']
+        if lower_choice == 'all' or choice == '12':
+            selected_keys = ['1', '2', '3', '4', '5', '10', '11']
         else:
             selected_keys = [c.strip() for c in choice.split(',') if c.strip()]
 
@@ -615,6 +616,80 @@ class SetupCommand:
                 print("✓ Calendar sync disabled.")
             else:
                 print("Calendar sync is already disabled")
+        else:
+            print("⚠️ Invalid choice. No changes made.")
+    
+    def _amend_insights_settings(self) -> None:
+        """Amend insights and analytics settings."""
+        print("\n📊 Insights & Analytics Settings")
+        print("\nThese features provide task completion tracking, streak analytics,")
+        print("and hygiene recommendations for your Apple Reminders tasks.")
+        
+        # Show current settings
+        print(f"\nCurrent settings:")
+        print(f"  • Insights display: {'enabled' if self.config.enable_insights else 'disabled'}")
+        print(f"  • Streak tracking: {'enabled' if self.config.enable_streak_tracking else 'disabled'}")
+        print(f"  • Daily note injection: {'enabled' if self.config.insights_in_daily_notes else 'disabled'}")
+        print(f"  • Hygiene assistant: {'enabled' if self.config.enable_hygiene_assistant else 'disabled'}")
+        print(f"  • Stagnant task threshold: {self.config.hygiene_stagnant_threshold} days")
+        
+        print("\nWhat would you like to update?")
+        print("  1. Enable/disable all insights features")
+        print("  2. Toggle streak tracking")
+        print("  3. Toggle daily note injection")
+        print("  4. Toggle hygiene assistant")
+        print("  5. Change stagnant task threshold")
+        print("  6. Cancel")
+        
+        choice = input("\nSelect option: ").strip()
+        
+        if choice == '1':
+            # Toggle all features
+            new_state = not self.config.enable_insights
+            action = "enable" if new_state else "disable"
+            confirm = input(f"This will {action} all insights features. Continue? (y/N): ").strip().lower()
+            if confirm == 'y':
+                self.config.enable_insights = new_state
+                self.config.enable_streak_tracking = new_state
+                self.config.insights_in_daily_notes = new_state
+                self.config.enable_hygiene_assistant = new_state
+                print(f"✓ All insights features {'enabled' if new_state else 'disabled'}.")
+            else:
+                print("Cancelled.")
+        
+        elif choice == '2':
+            # Toggle streak tracking
+            self.config.enable_streak_tracking = not self.config.enable_streak_tracking
+            status = "enabled" if self.config.enable_streak_tracking else "disabled"
+            print(f"✓ Streak tracking {status}.")
+        
+        elif choice == '3':
+            # Toggle daily note injection
+            self.config.insights_in_daily_notes = not self.config.insights_in_daily_notes
+            status = "enabled" if self.config.insights_in_daily_notes else "disabled"
+            print(f"✓ Daily note injection {status}.")
+        
+        elif choice == '4':
+            # Toggle hygiene assistant
+            self.config.enable_hygiene_assistant = not self.config.enable_hygiene_assistant
+            status = "enabled" if self.config.enable_hygiene_assistant else "disabled"
+            print(f"✓ Hygiene assistant {status}.")
+        
+        elif choice == '5':
+            # Change threshold
+            print(f"\nCurrent threshold: {self.config.hygiene_stagnant_threshold} days")
+            try:
+                new_threshold = int(input("Enter new threshold (days): ").strip())
+                if new_threshold > 0:
+                    self.config.hygiene_stagnant_threshold = new_threshold
+                    print(f"✓ Stagnant task threshold set to {new_threshold} days.")
+                else:
+                    print("⚠️ Threshold must be positive. No changes made.")
+            except ValueError:
+                print("⚠️ Invalid input. No changes made.")
+        
+        elif choice == '6':
+            print("Cancelled.")
         else:
             print("⚠️ Invalid choice. No changes made.")
     

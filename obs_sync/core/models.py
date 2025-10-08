@@ -260,8 +260,9 @@ class RemindersTask:
     priority: Optional[Priority] = None
     notes: Optional[str] = None
     tags: List[str] = field(default_factory=list)  # Added tags field
-    created_at: Optional[str] = None
-    modified_at: Optional[str] = None
+    created_at: Optional[datetime] = None
+    modified_at: Optional[datetime] = None
+    completion_date: Optional[date] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -279,8 +280,9 @@ class RemindersTask:
             "priority": self.priority.value if self.priority else None,
             "notes": self.notes,
             "tags": self.tags,  # Added tags to serialization
-            "created_at": self.created_at,
-            "updated_at": self.modified_at,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.modified_at.isoformat() if self.modified_at else None,
+            "completion_date": _date_to_iso(self.completion_date),
         }
 
     @classmethod
@@ -298,6 +300,27 @@ class RemindersTask:
 
         external_ids = data.get("external_ids", {})
         list_info = data.get("list", {})
+        
+        # Parse timestamps from ISO strings to datetime objects
+        created_at = None
+        if data.get("created_at"):
+            try:
+                if isinstance(data["created_at"], str):
+                    created_at = datetime.fromisoformat(data["created_at"])
+                elif isinstance(data["created_at"], datetime):
+                    created_at = data["created_at"]
+            except (ValueError, TypeError):
+                pass
+        
+        modified_at = None
+        if data.get("updated_at"):
+            try:
+                if isinstance(data["updated_at"], str):
+                    modified_at = datetime.fromisoformat(data["updated_at"])
+                elif isinstance(data["updated_at"], datetime):
+                    modified_at = data["updated_at"]
+            except (ValueError, TypeError):
+                pass
 
         return cls(
             uuid=data.get("uuid", str(uuid4())),
@@ -309,9 +332,10 @@ class RemindersTask:
             due_date=_iso_to_date(data.get("due")),
             priority=priority,
             notes=data.get("notes"),
-            tags=data.get("tags", []),  # Added tags deserialization
-            created_at=data.get("created_at"),
-            modified_at=data.get("updated_at"),
+            tags=data.get("tags", []),
+            created_at=created_at,
+            modified_at=modified_at,
+            completion_date=_iso_to_date(data.get("completion_date")),
         )
 
 
@@ -381,6 +405,13 @@ class SyncConfig:
     automation_interval: int = 3600  # Default: hourly
     # Update settings
     update_channel: str = "stable"  # "stable" or "beta"
+    # Insights and analytics settings
+    enable_insights: bool = True
+    enable_streak_tracking: bool = True
+    insights_in_daily_notes: bool = True
+    # Hygiene assistant settings
+    enable_hygiene_assistant: bool = True
+    hygiene_stagnant_threshold: int = 14  # Days before a task is considered stagnant
 
     def __post_init__(self) -> None:
         # Get the path manager

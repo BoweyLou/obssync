@@ -94,10 +94,10 @@ def test_reconfigure_amend_flow():
     with patch('builtins.input') as mock_input, \
          patch('builtins.print') as mock_print:
         
-        # Simulate user choosing amend (option 2) and then modifying vault mappings (option 1)
+        # Simulate user choosing amend (option 2 in reconfigure menu) and then modifying vault mappings (option 1 in amend menu)
         mock_input.side_effect = [
-            '2',  # Choose amend option
-            '1',  # Choose to modify vault mappings
+            '2',  # Choose amend option in reconfigure menu
+            '1',  # Choose to modify vault mappings in amend menu
             '2',  # Change Work vault to Personal list
             '',   # Keep Personal vault mapping as-is
         ]
@@ -224,7 +224,7 @@ def test_vault_removal():
          patch('builtins.input') as mock_input, \
          patch('builtins.print') as mock_print:
         
-        # Simulate user choosing to remove Personal vault (option 2)
+        # Simulate user choosing to remove Personal vault (option 2) and confirming with 'yes'
         mock_input.side_effect = ['2', 'yes']
         
         # Run the vault removal
@@ -271,9 +271,10 @@ def test_vault_removal_default_handling():
          patch('builtins.input') as mock_input, \
          patch('builtins.print') as mock_print:
         
-        # Simulate user choosing to remove Work vault (the default, option 1)
-        # and selecting Personal as the new default
-        mock_input.side_effect = ['1', 'yes', '1']  # Remove work, confirm, select personal as new default
+        # Simulate user choosing to remove Work vault (the default, option 1),
+        # selecting Personal as the new default, then confirming with 'yes'
+        # Note: The actual flow asks for new default AFTER confirmation
+        mock_input.side_effect = ['1', 'yes', '1']  # Remove work, confirm with 'yes', select personal as new default
         
         # Run the vault removal
         setup_cmd._remove_vault()
@@ -322,7 +323,7 @@ def test_reminders_list_removal():
     with patch('builtins.input') as mock_input, \
          patch('builtins.print') as mock_print:
         
-        # Simulate user choosing to remove Personal list (option 2)
+        # Simulate user choosing to remove Personal list (option 2) and confirming with 'yes'
         mock_input.side_effect = ['2', 'yes']
         
         # Run the list removal

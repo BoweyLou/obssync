@@ -1,7 +1,7 @@
 """Main sync engine orchestrating the synchronization process."""
 
 from typing import List, Dict, Optional, Set, Any, Tuple
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 import uuid
 import json
 import os
@@ -62,6 +62,15 @@ class SyncEngine:
         # Track tasks created during the current sync run
         self.created_obs_task_ids: Set[str] = set()
         self.created_rem_task_ids: Set[str] = set()
+        
+        # Track insights data
+        self.insights_data = {
+            "completions": 0,
+            "overdue": 0,
+            "new_tasks": 0,
+            "by_list": {},
+            "by_tag": {}
+        }
         
         # Track metadata for Reminders → Obsidian creations (for verbose output)
         self.rem_to_obs_creations: List[Dict[str, Any]] = []
@@ -151,6 +160,13 @@ class SyncEngine:
         self.created_obs_task_ids = set()
         self.created_rem_task_ids = set()
         self.rem_to_obs_creations = []
+        self.insights_data = {
+            "completions": 0,
+            "overdue": 0,
+            "new_tasks": 0,
+            "by_list": {},
+            "by_tag": {}
+        }
         
         # Store vault path for creation operations
         self.vault_path = vault_path
@@ -547,6 +563,14 @@ class SyncEngine:
         # Collect tag routing summary
         tag_summary = self._collect_tag_routing_summary(obs_tasks, rem_tasks, links)
         
+        # Collect insights (completions, overdue, new tasks)
+        self._collect_insights(obs_tasks_all, rem_tasks_all, links)
+        
+        # Record streaks if enabled and not in dry-run
+        streaks_data = None
+        if self.sync_config and self.sync_config.enable_streak_tracking and not dry_run:
+            streaks_data = self._record_streaks(obs_tasks_all, rem_tasks_all, links)
+        
         # Return results
         return {
             'success': True,
@@ -559,6 +583,8 @@ class SyncEngine:
             'created_rem_tasks': list(self.created_rem_task_ids),
             'rem_to_obs_creations': self.rem_to_obs_creations,
             'skipped_rem_count': self.skipped_rem_count,
+            'insights': self.insights_data,
+            'streaks': streaks_data,
             'dry_run': dry_run
         }
     
@@ -1216,6 +1242,207 @@ class SyncEngine:
                 summary[tag][list_name] = count
         
         return summary
+    
+    def _collect_insights(
+        self,
+        obs_tasks: List[ObsidianTask],
+        rem_tasks: List[RemindersTask],
+        links: List[SyncLink]
+    ) -> None:
+        """
+        Collect insight data from current sync: completions, overdue, new tasks.
+        Updates self.insights_data with aggregated counts by list and tag.
+        """
+        today = date.today()
+        
+        # Build a map of linked tasks
+        obs_uuid_to_rem = {link.obs_uuid: link.rem_uuid for link in links}
+        rem_uuid_to_obs = {link.rem_uuid: link.obs_uuid for link in links}
+        
+        # Track completions (tasks marked done recently)
+        for rem_task in rem_tasks:
+            if rem_task.status == TaskStatus.DONE:
+                # Check if completion is recent (within last 7 days for insights)
+                if rem_task.completion_date:
+                    days_since_completion = (today - rem_task.completion_date).days
+                    if days_since_completion <= 7:
+                        self.insights_data["completions"] += 1
+                        
+                        # By list
+                        list_name = rem_task.list_name or "Unknown"
+                        if list_name not in self.insights_data["by_list"]:
+                            self.insights_data["by_list"][list_name] = {
+                                "completions": 0, "overdue": 0, "new_tasks": 0
+                            }
+                        self.insights_data["by_list"][list_name]["completions"] += 1
+                        
+                        # By tag (get from linked Obsidian task)
+                        if rem_task.uuid in rem_uuid_to_obs:
+                            obs_uuid = rem_uuid_to_obs[rem_task.uuid]
+                            obs_task = self._find_task(obs_tasks, obs_uuid)
+                            if obs_task and obs_task.tags:
+                                for tag in obs_task.tags:
+                                    normalized_tag = SyncConfig._normalize_tag_value(tag)
+                                    if normalized_tag:
+                                        if normalized_tag not in self.insights_data["by_tag"]:
+                                            self.insights_data["by_tag"][normalized_tag] = {
+                                                "completions": 0, "overdue": 0, "new_tasks": 0
+                                            }
+                                        self.insights_data["by_tag"][normalized_tag]["completions"] += 1
+        
+        # Track overdue tasks
+        for rem_task in rem_tasks:
+            if rem_task.status != TaskStatus.DONE and rem_task.due_date:
+                if rem_task.due_date < today:
+                    self.insights_data["overdue"] += 1
+                    
+                    # By list
+                    list_name = rem_task.list_name or "Unknown"
+                    if list_name not in self.insights_data["by_list"]:
+                        self.insights_data["by_list"][list_name] = {
+                            "completions": 0, "overdue": 0, "new_tasks": 0
+                        }
+                    self.insights_data["by_list"][list_name]["overdue"] += 1
+                    
+                    # By tag
+                    if rem_task.uuid in rem_uuid_to_obs:
+                        obs_uuid = rem_uuid_to_obs[rem_task.uuid]
+                        obs_task = self._find_task(obs_tasks, obs_uuid)
+                        if obs_task and obs_task.tags:
+                            for tag in obs_task.tags:
+                                normalized_tag = SyncConfig._normalize_tag_value(tag)
+                                if normalized_tag:
+                                    if normalized_tag not in self.insights_data["by_tag"]:
+                                        self.insights_data["by_tag"][normalized_tag] = {
+                                            "completions": 0, "overdue": 0, "new_tasks": 0
+                                        }
+                                    self.insights_data["by_tag"][normalized_tag]["overdue"] += 1
+        
+        # Track new tasks created during this sync (both directions)
+        # New Reminders tasks
+        for task_id in self.created_rem_task_ids:
+            rem_task = self._find_task(rem_tasks, task_id)
+            if rem_task:
+                self.insights_data["new_tasks"] += 1
+                
+                # By list
+                list_name = rem_task.list_name or "Unknown"
+                if list_name not in self.insights_data["by_list"]:
+                    self.insights_data["by_list"][list_name] = {
+                        "completions": 0, "overdue": 0, "new_tasks": 0
+                    }
+                self.insights_data["by_list"][list_name]["new_tasks"] += 1
+                
+                # By tag
+                if rem_task.uuid in rem_uuid_to_obs:
+                    obs_uuid = rem_uuid_to_obs[rem_task.uuid]
+                    obs_task = self._find_task(obs_tasks, obs_uuid)
+                    if obs_task and obs_task.tags:
+                        for tag in obs_task.tags:
+                            normalized_tag = SyncConfig._normalize_tag_value(tag)
+                            if normalized_tag:
+                                if normalized_tag not in self.insights_data["by_tag"]:
+                                    self.insights_data["by_tag"][normalized_tag] = {
+                                        "completions": 0, "overdue": 0, "new_tasks": 0
+                                    }
+                                self.insights_data["by_tag"][normalized_tag]["new_tasks"] += 1
+        
+        # New Obsidian tasks
+        for task_id in self.created_obs_task_ids:
+            obs_task = self._find_task(obs_tasks, task_id)
+            if obs_task:
+                self.insights_data["new_tasks"] += 1
+                
+                # By tag
+                if obs_task.tags:
+                    for tag in obs_task.tags:
+                        normalized_tag = SyncConfig._normalize_tag_value(tag)
+                        if normalized_tag:
+                            if normalized_tag not in self.insights_data["by_tag"]:
+                                self.insights_data["by_tag"][normalized_tag] = {
+                                    "completions": 0, "overdue": 0, "new_tasks": 0
+                                }
+                            self.insights_data["by_tag"][normalized_tag]["new_tasks"] += 1
+                
+                # By list (get from linked Reminders task)
+                if obs_task.uuid in obs_uuid_to_rem:
+                    rem_uuid = obs_uuid_to_rem[obs_task.uuid]
+                    rem_task = self._find_task(rem_tasks, rem_uuid)
+                    if rem_task:
+                        list_name = rem_task.list_name or "Unknown"
+                        if list_name not in self.insights_data["by_list"]:
+                            self.insights_data["by_list"][list_name] = {
+                                "completions": 0, "overdue": 0, "new_tasks": 0
+                            }
+                        self.insights_data["by_list"][list_name]["new_tasks"] += 1
+    
+    def _record_streaks(
+        self,
+        obs_tasks: List[ObsidianTask],
+        rem_tasks: List[RemindersTask],
+        links: List[SyncLink]
+    ) -> Optional[Dict[str, Any]]:
+        """Record completion streaks using StreakTracker.
+        
+        Args:
+            obs_tasks: All Obsidian tasks in this sync
+            rem_tasks: All Reminders tasks in this sync
+            links: All sync links
+        
+        Returns:
+            Dict with current streaks if tracking is enabled, None otherwise.
+        """
+        from ..analytics.streaks import StreakTracker
+        from collections import defaultdict
+        
+        try:
+            tracker = StreakTracker()
+            
+            # Build a map of linked tasks
+            rem_uuid_to_obs = {link.rem_uuid: link.obs_uuid for link in links}
+            
+            # Group completions by their actual completion date
+            completions_by_date = defaultdict(lambda: {"by_tag": defaultdict(int), "by_list": defaultdict(int)})
+            
+            # Only process tasks completed within the last 7 days
+            today = date.today()
+            
+            for rem_task in rem_tasks:
+                if rem_task.status == TaskStatus.DONE and rem_task.completion_date:
+                    days_since = (today - rem_task.completion_date).days
+                    if days_since <= 7:
+                        completion_date = rem_task.completion_date
+                        
+                        # Count by list
+                        list_name = rem_task.list_name or "Unknown"
+                        completions_by_date[completion_date]["by_list"][list_name] += 1
+                        
+                        # Count by tag (get from linked Obsidian task)
+                        if rem_task.uuid in rem_uuid_to_obs:
+                            obs_uuid = rem_uuid_to_obs[rem_task.uuid]
+                            obs_task = self._find_task(obs_tasks, obs_uuid)
+                            if obs_task and obs_task.tags:
+                                for tag in obs_task.tags:
+                                    normalized_tag = SyncConfig._normalize_tag_value(tag)
+                                    if normalized_tag:
+                                        completions_by_date[completion_date]["by_tag"][normalized_tag] += 1
+            
+            # Record completions for each date
+            for completion_date, counts in completions_by_date.items():
+                tracker.record_completions(
+                    vault_id=self.vault_id,
+                    target_date=completion_date,
+                    by_tag=dict(counts["by_tag"]),
+                    by_list=dict(counts["by_list"])
+                )
+            
+            # Get all current streaks
+            streaks = tracker.get_all_streaks(vault_id=self.vault_id, min_current=1)
+            return streaks
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to record streaks: {e}")
+            return None
     
     def _persist_links(self, links: List[SyncLink], current_obs_uuids: Optional[Set[str]] = None) -> None:
         """Persist sync links to file, preserving other vaults' entries.

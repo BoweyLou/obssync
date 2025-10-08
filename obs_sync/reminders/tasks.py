@@ -42,6 +42,26 @@ class RemindersTaskManager:
             elif rem.priority == "low":
                 priority = Priority.LOW
 
+            # Parse datetime fields from ISO strings
+            created_at_dt = None
+            if rem.created_at:
+                try:
+                    created_at_dt = datetime.fromisoformat(rem.created_at)
+                except (ValueError, TypeError):
+                    pass
+            
+            modified_at_dt = None
+            if rem.modified_at:
+                try:
+                    modified_at_dt = datetime.fromisoformat(rem.modified_at)
+                except (ValueError, TypeError):
+                    pass
+            
+            # For completed tasks, use modified_at as completion_date proxy
+            completion_date = None
+            if status == TaskStatus.DONE and modified_at_dt:
+                completion_date = modified_at_dt.date()
+            
             task = RemindersTask(
                 uuid=rem.uuid,
                 item_id=rem.uuid,
@@ -53,8 +73,9 @@ class RemindersTaskManager:
                 priority=priority,
                 notes=rem.notes,
                 tags=rem.tags,  # Include tags from gateway
-                created_at=rem.created_at,
-                modified_at=rem.modified_at,
+                created_at=created_at_dt,
+                modified_at=modified_at_dt,
+                completion_date=completion_date,
             )
             tasks.append(task)
         
@@ -94,7 +115,7 @@ class RemindersTaskManager:
         self.logger.debug(f"RemindersGateway.create_reminder returned uuid: {uuid_value}")
         
         if uuid_value:
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(timezone.utc)
             task.uuid = uuid_value
             task.item_id = uuid_value
             task.calendar_id = list_id
@@ -172,7 +193,11 @@ class RemindersTaskManager:
             return task
 
         if self.gateway.update_reminder(task.uuid, **updates):
-            task.modified_at = datetime.now(timezone.utc).isoformat()
+            task.modified_at = datetime.now(timezone.utc)
+            # Capture completion_date when status flips to done
+            if "completed" in updates and updates["completed"] and task.status == TaskStatus.DONE:
+                if not task.completion_date:
+                    task.completion_date = datetime.now(timezone.utc).date()
             return task
 
         return None

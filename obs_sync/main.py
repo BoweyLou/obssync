@@ -19,7 +19,8 @@ from obs_sync.commands import (
     CalendarCommand,
     InstallDepsCommand,
     MigrateCommand,
-    UpdateCommand
+    UpdateCommand,
+    InsightsCommand
 )
 
 
@@ -125,6 +126,14 @@ Examples:
         help='Show what would be done without making changes'
     )
     
+    # Insights command
+    insights_parser = subparsers.add_parser('insights', help='Analyze task hygiene and show recommendations')
+    insights_parser.add_argument(
+        '--export',
+        metavar='PATH',
+        help='Export hygiene report to JSON file'
+    )
+    
     # Update command
     update_parser = subparsers.add_parser('update', help='Update obs-sync to latest version')
     update_parser.add_argument(
@@ -209,6 +218,10 @@ Examples:
         elif args.command == 'calendar':
             cmd = CalendarCommand(config, verbose=args.verbose)
             success = cmd.run(date_str=args.date, dry_run=args.dry_run)
+            
+        elif args.command == 'insights':
+            cmd = InsightsCommand(config, verbose=args.verbose)
+            success = cmd.run(export_json=args.export)
             
         elif args.command == 'update':
             cmd = UpdateCommand(config, verbose=args.verbose)

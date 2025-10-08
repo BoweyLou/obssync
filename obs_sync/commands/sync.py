@@ -1,7 +1,7 @@
 """Sync command - perform bidirectional task synchronization."""
 
 import os
-from typing import List, Optional
+from typing import Dict, List, Optional
 import logging
 from datetime import date
 
@@ -14,6 +14,7 @@ from ..utils.prompts import (
     prompt_for_keeps,
     show_deduplication_summary
 )
+from ..utils.insights import aggregate_insights, format_insight_cli_summary
 
 
 class SyncCommand:
@@ -133,6 +134,11 @@ class SyncCommand:
                         self.config.default_vault and vault.vault_id == self.config.default_vault.vault_id):
                         self.logger.info(f"Running calendar import for vault: {vault.name}")
                         self._run_calendar_import(vault, list_ids)
+                    
+                    # Inject insights into daily note if enabled
+                    if (apply_changes and self.config.insights_in_daily_notes and
+                        self.config.enable_insights):
+                        self._inject_insights_to_daily_note(vault, vault_result)
 
                 if idx < total_vaults:
                     print("-" * 50)
@@ -213,6 +219,10 @@ class SyncCommand:
         # Collect tag routing info across all vaults
         all_tag_summaries = {}
         
+        # Collect insights from all vaults
+        all_vault_insights = []
+        all_vault_streaks = []
+        
         for vault_result in vault_results:
             if vault_result.get('success', False):
                 total_vaults_success += 1
@@ -239,6 +249,16 @@ class SyncCommand:
                 
                 # Aggregate skipped reminders
                 total_skipped_rem += results.get('skipped_rem_count', 0)
+                
+                # Collect insights data
+                insights = results.get('insights', {})
+                if insights and isinstance(insights, dict):
+                    all_vault_insights.append(insights)
+                
+                # Collect streaks data
+                streaks = results.get('streaks')
+                if streaks and isinstance(streaks, dict):
+                    all_vault_streaks.append(streaks)
                 
                 # Collect tag routing summaries
                 tag_summary = results.get('tag_summary', {})
@@ -271,6 +291,33 @@ class SyncCommand:
                 print(f"  {tag}:")
                 for list_name, count in stats.items():
                     print(f"    → {list_name}: {count} tasks")
+        
+        # Show insights if available and enabled
+        if all_vault_insights and self.config.enable_insights:
+            combined_insights = aggregate_insights(all_vault_insights)
+            if any([combined_insights.get("completions", 0),
+                    combined_insights.get("overdue", 0),
+                    combined_insights.get("new_tasks", 0)]):
+                print("\n" + format_insight_cli_summary(combined_insights))
+        
+        # Show streaks if available and enabled
+        if all_vault_streaks and self.config.enable_streak_tracking:
+            # Merge streaks from all vaults
+            # New format from get_all_streaks() is flat: {"tag:name": {...}, "list:name": {...}}
+            merged_streaks = {}
+            for vault_streaks in all_vault_streaks:
+                for key, streak_info in vault_streaks.items():
+                    if key not in merged_streaks:
+                        merged_streaks[key] = streak_info
+                    else:
+                        # Take the max values when merging
+                        merged_streaks[key] = {
+                            'current': max(merged_streaks[key].get('current', 0), streak_info.get('current', 0)),
+                            'best': max(merged_streaks[key].get('best', 0), streak_info.get('best', 0))
+                        }
+            
+            if merged_streaks:
+                self._show_streaks_summary(merged_streaks)
         
         # Show changes summary
         has_sync_changes = any([
@@ -324,6 +371,40 @@ class SyncCommand:
         else:
             print("\nNo changes needed. Everything is already in sync across all vaults.")
 
+    def _show_streaks_summary(self, streaks: Dict[str, Dict[str, int]]) -> None:
+        """Display streaks summary in terminal.
+        
+        Args:
+            streaks: Dict mapping tag/list names to streak info (current, best)
+        """
+        print("\n" + "=" * 60)
+        print("  MOMENTUM STREAKS")
+        print("=" * 60)
+        
+        # Sort by current streak descending
+        sorted_streaks = sorted(
+            streaks.items(),
+            key=lambda x: (x[1].get('current', 0), x[1].get('best', 0)),
+            reverse=True
+        )
+        
+        for key, streak_info in sorted_streaks:
+            current = streak_info.get('current', 0)
+            best = streak_info.get('best', 0)
+            
+            if current > 0:
+                # Choose emoji based on streak length
+                if current >= 7:
+                    emoji = "🔥"
+                elif current >= 3:
+                    emoji = "⚡"
+                else:
+                    emoji = "✨"
+                
+                print(f"  {emoji} {key}: {current} days (best: {best})")
+        
+        print("=" * 60)
+    
     def _run_calendar_import(self, vault, list_ids: Optional[List[str]]) -> None:
         """Run calendar import for the default vault if conditions are met."""
         try:
@@ -371,6 +452,43 @@ class SyncCommand:
             self.logger.error(f"Calendar import failed: {e}")
             if self.verbose:
                 print(f"   ❌ Calendar import failed: {e}")
+    
+    def _inject_insights_to_daily_note(self, vault, vault_result: dict) -> None:
+        """Inject insights snapshot into today's daily note."""
+        try:
+            from ..calendar.daily_notes import DailyNoteManager
+            from ..analytics.streaks import StreakTracker
+            
+            results = vault_result.get('results', {})
+            insights = results.get('insights', {})
+            
+            # Skip if no insights data
+            if not insights or not any([
+                insights.get("completions", 0),
+                insights.get("overdue", 0),
+                insights.get("new_tasks", 0)
+            ]):
+                if self.verbose:
+                    print(f"   📊 No insights to inject for {vault.name}")
+                return
+            
+            # Get streaks if enabled
+            streaks_data = None
+            if self.config.enable_streak_tracking:
+                tracker = StreakTracker()
+                streaks_data = tracker.get_all_streaks(vault.vault_id, min_current=1)
+            
+            # Inject into daily note
+            note_manager = DailyNoteManager(vault.path)
+            today = date.today()
+            note_path = note_manager.update_insights_section(today, insights, streaks_data)
+            
+            print(f"   📊 Updated daily note with task insights: {note_path}")
+            
+        except Exception as e:
+            self.logger.error(f"Insights injection failed: {e}")
+            if self.verbose:
+                print(f"   ❌ Insights injection failed: {e}")
 
 
 def sync_command(

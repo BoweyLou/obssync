@@ -3,7 +3,7 @@
 import os
 import re
 from datetime import date
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from .gateway import CalendarEvent
 
 
@@ -82,6 +82,80 @@ class DailyNoteManager:
 - **What could be improved:**
 - **Key learnings:**
 """
+    
+    def update_insights_section(
+        self,
+        target_date: date,
+        insights: Dict[str, Any],
+        streaks: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Update daily note with task insights snapshot.
+        
+        Args:
+            target_date: Date for the daily note
+            insights: Insight data (completions, overdue, new tasks by list/tag)
+            streaks: Optional streak data
+        
+        Returns:
+            Path to the updated daily note
+        """
+        from ..utils.insights import format_insight_snapshot_markdown, INSIGHT_SECTION_START, INSIGHT_SECTION_END
+        
+        note_path = self.get_daily_note_path(target_date)
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(note_path), exist_ok=True)
+        
+        # Read existing content or create new
+        if os.path.exists(note_path):
+            with open(note_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        else:
+            content = self._create_new_daily_note(target_date)
+        
+        # Generate insights section
+        date_str = target_date.strftime("%Y-%m-%d")
+        insights_markdown = format_insight_snapshot_markdown(insights, streaks, date_str)
+        
+        # Remove existing insights section if present
+        content = self._remove_section(content, INSIGHT_SECTION_START, INSIGHT_SECTION_END)
+        
+        # Insert new insights section after the title
+        content = self._insert_section_after_title(content, insights_markdown)
+        
+        # Write back
+        with open(note_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        
+        return note_path
+    
+    def _remove_section(self, content: str, start_marker: str, end_marker: str) -> str:
+        """Remove a section between markers if it exists."""
+        pattern = re.compile(
+            re.escape(start_marker) + r'.*?' + re.escape(end_marker),
+            re.DOTALL | re.MULTILINE
+        )
+        return pattern.sub('', content)
+    
+    def _insert_section_after_title(self, content: str, section: str) -> str:
+        """Insert a section after the daily note title."""
+        lines = content.split('\n')
+        
+        # Find the title line (starts with #)
+        title_idx = -1
+        for i, line in enumerate(lines):
+            if line.strip().startswith('# '):
+                title_idx = i
+                break
+        
+        if title_idx >= 0:
+            # Insert after title, with blank line
+            result = lines[:title_idx+1] + ['', section, ''] + lines[title_idx+1:]
+            return '\n'.join(result)
+        else:
+            # No title found, insert at beginning
+            return section + '\n\n' + content
     
     def _insert_calendar_section(self, content: str,
                                 events: List[CalendarEvent]) -> str:

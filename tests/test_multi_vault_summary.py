@@ -142,17 +142,17 @@ def test_multi_vault_summary_aggregation():
         assert "✅ Sync completed" in output, "Should show completion status"
         
         # Verify consolidated summary is shown
-        assert "🔄 Sync Summary" in output, "Should show consolidated summary header"
-        assert "Overall Statistics:" in output, "Should show overall stats section"
+        assert "🔄 Sync summary" in output, "Should show consolidated summary header"
+        assert "Overall statistics:" in output, "Should show overall stats section"
         
         # Check aggregated totals
         assert "Total Obsidian tasks: 25" in output, "Should aggregate obs tasks (10+15)"
         assert "Total Reminders tasks: 20" in output, "Should aggregate rem tasks (8+12)"
         assert "Total matched pairs: 13" in output, "Should aggregate links (5+8)"
-        assert "Vaults processed: 2 (2 successful, 0 failed)" in output, "Should show vault processing stats"
+        assert "Vaults processed: 2 — 2 successful / 0 failed" in output, "Should show vault processing stats"
         
         # Check aggregated changes
-        assert "Total Changes to make:" in output, "Should show aggregated changes header"
+        assert "Total changes to make:" in output, "Should show aggregated changes header"
         assert "Obsidian updates: 3" in output, "Should aggregate obs updates (2+1)"
         assert "Reminders updates: 3" in output, "Should aggregate rem updates (1+2)"
         assert "Obsidian creations: 4" in output, "Should aggregate obs creations (3+1)"
@@ -161,7 +161,7 @@ def test_multi_vault_summary_aggregation():
         assert "Conflicts resolved: 1" in output, "Should aggregate conflicts (1+0)"
         
         # Check aggregated tag routing
-        assert "📊 Tag Routing Summary (All Vaults):" in output, "Should show aggregated tag routing"
+        assert "📊 Tag routing summary (all vaults):" in output, "Should show aggregated tag routing"
         assert "work:" in output, "Should aggregate work tag across vaults"
         assert "→ List1: 5 task(s)" in output, "Should show List1 work tasks"
         assert "→ List2: 7 task(s)" in output, "Should show List2 work tasks"
@@ -172,7 +172,7 @@ def test_multi_vault_summary_aggregation():
         assert "Reminders deletions: 2" in output, "Should aggregate rem dedup (0+2)"
         
         # Check dry-run reminder
-        assert "💡 This was a dry run. Use --apply to make changes." in output, "Should show dry-run reminder"
+        assert "💡 Dry run only—rerun with --apply to apply these changes." in output, "Should show dry-run reminder"
         
         # Verify final status message
         assert "✅ All vaults synced successfully!" in output, "Should show final success message"
@@ -254,7 +254,7 @@ def test_multi_vault_with_failures():
         # Check failure handling
         assert "⚠️  Vault 2/2: BadVault" in output, "Should show vault failure header"
         assert "Vault path does not exist: /tmp/bad" in output, "Should show vault path error"
-        assert "Vaults processed: 2 (1 successful, 1 failed)" in output, "Should show correct failure count"
+        assert "Vaults processed: 2 — 1 successful / 1 failed" in output, "Should show correct failure count"
         assert "⚠️  Some vaults had sync errors" in output, "Should show warning about errors"
         
         # Should still show stats for successful vault
@@ -323,7 +323,7 @@ def test_single_vault_legacy_behavior():
         assert result is True, "Single vault sync should succeed"
         
         # Single vault with mappings still uses new consolidated summary
-        assert "🔄 Sync Summary" in output, "Single vault with mappings should show consolidated summary"
+        assert "🔄 Sync summary" in output, "Single vault with mappings should show consolidated summary"
 
 
 def test_legacy_no_mappings_behavior():
@@ -387,7 +387,7 @@ def test_legacy_no_mappings_behavior():
         assert result is True, "Legacy sync should succeed"
         
         # Should use true legacy path (no consolidated summary)
-        assert "🔄 Sync Summary" not in output, "Legacy fallback should not show consolidated summary"
+        assert "🔄 Sync summary" not in output, "Legacy fallback should not show consolidated summary"
         assert "📁 Syncing vault: legacy" in output, "Should show legacy vault sync message"
 
 
