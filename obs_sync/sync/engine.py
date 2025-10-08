@@ -91,6 +91,15 @@ class SyncEngine:
         # Flag to track when links need persisting due to normalization
         self._links_need_persist = False
 
+    @staticmethod
+    def _datetime_to_iso(value: Optional[datetime]) -> Optional[str]:
+        """Convert a datetime object to a UTC ISO string."""
+        if not value:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+
     def _resolve_vault_for_path(self, vault_path: str) -> Optional[Any]:
         """Resolve vault configuration for a given path with improved normalization.
 
@@ -634,7 +643,10 @@ class SyncEngine:
 
         elif conflicts["title_winner"] == "rem" and allow_obs_updates:
             if not dry_run:
-                self.obs_manager.update_task(obs_task, {"description": rem_task.title})
+                self.obs_manager.update_task(
+                    obs_task,
+                    {"description": rem_task.display_title()},
+                )
             self.changes_made["obs_updated"] += 1
             change_applied = True
 
@@ -892,6 +904,15 @@ class SyncEngine:
                 vault_id = self.vault_id or os.path.basename(self.vault_path)
                 vault_name = self.vault_name or os.path.basename(self.vault_path)
 
+                description_text = rem_task.display_title()
+                created_at_iso = (
+                    self._datetime_to_iso(rem_task.created_at)
+                    or datetime.now(timezone.utc).isoformat()
+                )
+                modified_at_iso = (
+                    self._datetime_to_iso(rem_task.modified_at) or created_at_iso
+                )
+
                 obs_task = ObsidianTask(
                     uuid=f"obs-{uuid.uuid4().hex[:8]}",
                     vault_id=vault_id,
@@ -901,14 +922,14 @@ class SyncEngine:
                     line_number=0,  # Will be set when created
                     block_id=None,  # Will be set when created
                     status=rem_task.status,
-                    description=rem_task.title,
+                    description=description_text,
                     raw_line="",  # Will be set when created
                     due_date=rem_task.due_date,
                     completion_date=None,
                     priority=rem_task.priority,
                     tags=obs_tags,
-                    created_at=datetime.now(timezone.utc).isoformat(),
-                    modified_at=datetime.now(timezone.utc).isoformat(),
+                    created_at=created_at_iso,
+                    modified_at=modified_at_iso,
                 )
                 
                 # Track metadata for verbose output
@@ -917,6 +938,7 @@ class SyncEngine:
                     "rem_uuid": rem_task.uuid,
                     "list_name": list_name,
                     "calendar_id": rem_task.calendar_id,
+                    "url": rem_task.url,
                     "obs_uuid": None,  # Will be set after creation if not dry_run
                 }
                 

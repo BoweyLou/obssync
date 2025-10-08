@@ -23,6 +23,7 @@ class ReminderData:
     completed: bool
     due_date: Optional[str] = None
     priority: Optional[str] = None
+    url: Optional[str] = None
     notes: Optional[str] = None
     tags: List[str] = field(default_factory=list)  # Added tags field
     list_id: Optional[str] = None
@@ -361,6 +362,26 @@ class RemindersGateway:
                 except:
                     pass
                 
+                # URL (preserve dedicated reminder links)
+                url = None
+                try:
+                    url_obj = None
+                    if hasattr(rem, "URL"):
+                        url_obj = rem.URL()
+                    elif hasattr(rem, "url"):
+                        url_obj = rem.url()
+                    elif hasattr(rem, "valueForKey_"):
+                        url_obj = rem.valueForKey_("URL")
+                    if url_obj:
+                        if hasattr(url_obj, "absoluteString"):
+                            url_value = str(url_obj.absoluteString())
+                        else:
+                            url_value = str(url_obj)
+                        url_value = url_value.strip()
+                        url = url_value if url_value else None
+                except Exception:
+                    pass
+                
                 # List info
                 list_id = None
                 list_name = None
@@ -399,6 +420,7 @@ class RemindersGateway:
                     completed=completed,
                     due_date=due_date,
                     priority=priority,
+                    url=url,
                     notes=notes,
                     tags=tags,  # Include decoded tags
                     list_id=list_id,
@@ -418,7 +440,7 @@ class RemindersGateway:
         """Create a new reminder."""
         try:
             from EventKit import EKReminder
-            from Foundation import NSDateComponents
+            from Foundation import NSDateComponents, NSURL
             
             store = self._get_store()
             reminder = EKReminder.reminderWithEventStore_(store)
@@ -467,6 +489,21 @@ class RemindersGateway:
             if encoded_notes:
                 reminder.setNotes_(encoded_notes)
             
+            # Handle URL property
+            url_value = properties.get('url')
+            if url_value:
+                try:
+                    nsurl = NSURL.URLWithString_(url_value)
+                    if nsurl:
+                        reminder.setURL_(nsurl)
+                except Exception:
+                    self.logger.debug(
+                        "Failed to set URL '%s' on new reminder '%s'",
+                        url_value,
+                        title,
+                        exc_info=True,
+                    )
+
             # Save
             success, error = store.saveReminder_commit_error_(reminder, True, None)
             self.logger.debug(f"saveReminder result: success={success}, error={error}")
@@ -487,7 +524,7 @@ class RemindersGateway:
     def update_reminder(self, uuid: str, **updates) -> bool:
         """Update an existing reminder."""
         try:
-            from Foundation import NSDateComponents
+            from Foundation import NSDateComponents, NSURL
             
             store = self._get_store()
             
@@ -543,7 +580,23 @@ class RemindersGateway:
             if 'priority' in updates:
                 priority_map = {'high': 1, 'medium': 5, 'low': 9}
                 reminder.setPriority_(priority_map.get(updates['priority'], 0))
-            
+
+            if 'url' in updates:
+                url_value = updates['url']
+                try:
+                    if url_value:
+                        nsurl = NSURL.URLWithString_(url_value)
+                        reminder.setURL_(nsurl)
+                    else:
+                        reminder.setURL_(None)
+                except Exception:
+                    self.logger.debug(
+                        "Failed to update URL '%s' on reminder %s",
+                        url_value,
+                        uuid,
+                        exc_info=True,
+                    )
+
             # Handle calendar/list change
             if 'calendar_id' in updates:
                 new_calendar_id = updates['calendar_id']

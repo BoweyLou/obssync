@@ -155,11 +155,49 @@ class TestRemindersTaskManagerCreate:
         )
         
         result = manager.create_task("list-1", task)
-        
+
         assert result is not None
         call_kwargs = mock_gateway.create_reminder.call_args[1]
         assert 'notes' in call_kwargs
         assert 'tags' in call_kwargs
+
+    def test_create_task_with_url(self):
+        """Ensure URLs are passed through to the gateway and retained."""
+        mock_gateway = Mock(spec=RemindersGateway)
+        mock_gateway.create_reminder.return_value = "new-url-uuid"
+        reminder_url = "https://example.com/resource"
+        mock_gateway.get_reminders.return_value = [
+            ReminderData(
+                uuid="new-url-uuid",
+                title="Task with url",
+                completed=False,
+                url=reminder_url,
+                list_id="list-1",
+                list_name="Work",
+                created_at=datetime.now(timezone.utc).isoformat(),
+                modified_at=datetime.now(timezone.utc).isoformat(),
+            )
+        ]
+
+        manager = RemindersTaskManager(gateway=mock_gateway)
+
+        task = RemindersTask(
+            uuid="temp",
+            item_id=None,
+            calendar_id="list-1",
+            list_name="Work",
+            status=TaskStatus.TODO,
+            title="Task with url",
+            url=reminder_url,
+        )
+
+        result = manager.create_task("list-1", task)
+
+        assert result is not None
+        assert result.url == reminder_url
+
+        call_kwargs = mock_gateway.create_reminder.call_args[1]
+        assert call_kwargs.get("url") == reminder_url
     
     def test_create_task_gateway_failure(self):
         """Test handling of gateway failures during creation."""
@@ -338,6 +376,29 @@ class TestRemindersTaskManagerList:
         todo_tasks = manager.list_tasks(include_completed=False)
         assert len(todo_tasks) >= 1
         assert all(task.status == TaskStatus.TODO for task in todo_tasks)
+
+    def test_list_tasks_preserves_url(self):
+        """Ensure reminder URLs are retained when listing tasks."""
+        mock_gateway = Mock(spec=RemindersGateway)
+        reminder_url = "https://example.com/task"
+        mock_gateway.get_reminders.return_value = [
+            ReminderData(
+                uuid="1",
+                title="Task with url",
+                completed=False,
+                url=reminder_url,
+                list_id="list-1",
+                list_name="Work",
+                created_at=datetime.now(timezone.utc).isoformat(),
+                modified_at=datetime.now(timezone.utc).isoformat(),
+            )
+        ]
+
+        manager = RemindersTaskManager(gateway=mock_gateway)
+        tasks = manager.list_tasks(include_completed=True)
+
+        assert tasks
+        assert tasks[0].url == reminder_url
 
 
 if __name__ == "__main__":

@@ -71,6 +71,7 @@ class RemindersTaskManager:
                 title=rem.title,
                 due_date=parse_date(rem.due_date),
                 priority=priority,
+                url=rem.url,
                 notes=rem.notes,
                 tags=rem.tags,  # Include tags from gateway
                 created_at=created_at_dt,
@@ -108,6 +109,7 @@ class RemindersTaskManager:
             list_id=list_id,
             due_date=due_str,
             priority=priority,
+            url=task.url,
             notes=task.notes,
             tags=task.tags,  # Include tags for creation
         )
@@ -175,6 +177,10 @@ class RemindersTaskManager:
             else:
                 task.priority = None
                 updates["priority"] = None
+
+        if "url" in changes:
+            updates["url"] = changes["url"]
+            task.url = changes["url"]
 
         if "notes" in changes:
             updates["notes"] = changes["notes"]

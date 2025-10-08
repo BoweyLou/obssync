@@ -258,6 +258,7 @@ class RemindersTask:
     title: str
     due_date: Optional[date] = None
     priority: Optional[Priority] = None
+    url: Optional[str] = None
     notes: Optional[str] = None
     tags: List[str] = field(default_factory=list)  # Added tags field
     created_at: Optional[datetime] = None
@@ -278,12 +279,25 @@ class RemindersTask:
             "description": self.title,
             "due": _date_to_iso(self.due_date),
             "priority": self.priority.value if self.priority else None,
+            "url": self.url,
             "notes": self.notes,
             "tags": self.tags,  # Added tags to serialization
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.modified_at.isoformat() if self.modified_at else None,
             "completion_date": _date_to_iso(self.completion_date),
         }
+
+    def display_title(self) -> str:
+        """Compose a display-friendly title including the reminder URL when present."""
+        parts: List[str] = []
+        if self.title and self.title.strip():
+            parts.append(self.title.strip())
+        url_str = (self.url or "").strip() if self.url else None
+        if url_str:
+            base = parts[0] if parts else ""
+            if url_str not in base:
+                parts.append(url_str)
+        return " ".join(part for part in parts if part).strip()
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> RemindersTask:
@@ -331,6 +345,7 @@ class RemindersTask:
             title=data.get("description", ""),
             due_date=_iso_to_date(data.get("due")),
             priority=priority,
+            url=data.get("url"),
             notes=data.get("notes"),
             tags=data.get("tags", []),
             created_at=created_at,

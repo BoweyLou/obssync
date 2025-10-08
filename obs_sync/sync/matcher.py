@@ -71,7 +71,7 @@ class TaskMatcher:
         """Calculate similarity score between two tasks."""
         # Title similarity (70% weight)
         obs_tokens = normalize_text_for_similarity(obs_task.description)
-        rem_tokens = normalize_text_for_similarity(rem_task.title)
+        rem_tokens = normalize_text_for_similarity(rem_task.display_title())
         
         # Special case: If both normalize to empty but raw strings match ignoring case/whitespace
         # This handles cases like URL-only tasks or single "#" tasks
