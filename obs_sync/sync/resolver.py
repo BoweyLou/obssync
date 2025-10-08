@@ -1,6 +1,6 @@
 """Conflict resolution for bidirectional sync."""
 
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List, Union
 from datetime import datetime
 from ..core.models import ObsidianTask, RemindersTask, TaskStatus, Priority
 from ..utils.date import dates_equal
@@ -35,11 +35,14 @@ class ConflictResolver:
         else:
             results['status_winner'] = 'none'
         
-        # Title/description conflict
-        if self._text_differs(obs_task.description, rem_task.title):
+        # Title/description conflict (include URL if present)
+        rem_display_title = rem_task.display_title()
+        if self._text_differs(obs_task.description, rem_display_title):
             winner = self._compare_times(obs_time, rem_time)
             results['title_winner'] = winner
-            self.logger.debug(f"Title conflict: obs='{obs_task.description}' vs rem='{rem_task.title}' -> {winner}")
+            self.logger.debug(
+                f"Title conflict: obs='{obs_task.description}' vs rem='{rem_display_title}' -> {winner}"
+            )
         else:
             results['title_winner'] = 'none'
         
@@ -84,13 +87,26 @@ class ConflictResolver:
         
         return results
     
-    def _parse_time(self, time_str: Optional[str]) -> Optional[datetime]:
-        """Parse ISO timestamp string."""
-        if not time_str:
+    def _parse_time(self, time_value: Optional[Union[str, datetime]]) -> Optional[datetime]:
+        """Parse timestamp from ISO string or datetime object.
+        
+        Args:
+            time_value: Either an ISO 8601 string or a datetime object
+            
+        Returns:
+            datetime object if parsing succeeds, None otherwise
+        """
+        if not time_value:
             return None
+        
+        # Already a datetime object (from RemindersTask)
+        if isinstance(time_value, datetime):
+            return time_value
+        
+        # Parse ISO string (from ObsidianTask)
         try:
-            return datetime.fromisoformat(time_str.replace('Z', '+00:00'))
-        except:
+            return datetime.fromisoformat(time_value.replace('Z', '+00:00'))
+        except (AttributeError, ValueError):
             return None
     
     def _compare_times(self, obs_time: Optional[datetime],

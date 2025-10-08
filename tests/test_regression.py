@@ -352,5 +352,134 @@ class TestCalendarSyncToggle:
             assert loaded.sync_calendar_events is True
 
 
+class TestConflictResolutionTimestamps:
+    """Regression tests for timestamp type handling in conflict resolution."""
+    
+    def test_reminders_datetime_wins_over_older_obsidian_string(self):
+        """
+        Test that Reminders completion with datetime modified_at beats
+        older Obsidian string timestamp.
+        
+        Regression: Bug where _parse_time failed on datetime objects,
+        causing Reminders to always lose conflicts.
+        """
+        from datetime import datetime, timezone, timedelta
+        from obs_sync.sync.resolver import ConflictResolver
+        from obs_sync.core.models import ObsidianTask, RemindersTask, TaskStatus
+        
+        resolver = ConflictResolver()
+        
+        # Obsidian task last modified 1 hour ago (ISO string)
+        one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+        obs_task = ObsidianTask(
+            uuid="obs-123",
+            vault_id="v1",
+            vault_name="Test",
+            vault_path="/tmp/test",
+            file_path="todo.md",
+            line_number=5,
+            block_id="abc",
+            status=TaskStatus.TODO,  # Still TODO in Obsidian
+            description="Buy milk",
+            raw_line="- [ ] Buy milk",
+            modified_at=one_hour_ago.isoformat()  # String timestamp
+        )
+        
+        # Reminders task completed just now (datetime object)
+        now = datetime.now(timezone.utc)
+        rem_task = RemindersTask(
+            uuid="obs-123",  # Same UUID
+            item_id="rem-456",
+            calendar_id="cal-1",
+            list_name="Shopping",
+            status=TaskStatus.DONE,  # Completed in Reminders
+            title="Buy milk",
+            modified_at=now  # datetime object (NOT string)
+        )
+        
+        # Resolve conflicts
+        conflicts = resolver.resolve_conflicts(obs_task, rem_task)
+        
+        # Reminders should win because it has newer timestamp
+        assert conflicts['status_winner'] == 'rem', \
+            f"Expected Reminders to win status conflict (newer timestamp), got {conflicts['status_winner']}"
+    
+    def test_obsidian_string_wins_over_older_reminders_datetime(self):
+        """
+        Test that Obsidian update with newer ISO string beats
+        older Reminders datetime timestamp.
+        """
+        from datetime import datetime, timezone, timedelta
+        from obs_sync.sync.resolver import ConflictResolver
+        from obs_sync.core.models import ObsidianTask, RemindersTask, TaskStatus
+        
+        resolver = ConflictResolver()
+        
+        # Reminders task modified 1 hour ago (datetime object)
+        one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+        rem_task = RemindersTask(
+            uuid="task-789",
+            item_id="rem-789",
+            calendar_id="cal-1",
+            list_name="Work",
+            status=TaskStatus.TODO,
+            title="Review PR",
+            modified_at=one_hour_ago  # datetime object
+        )
+        
+        # Obsidian task just updated (ISO string)
+        now = datetime.now(timezone.utc)
+        obs_task = ObsidianTask(
+            uuid="task-789",
+            vault_id="v1",
+            vault_name="Test",
+            vault_path="/tmp/test",
+            file_path="work.md",
+            line_number=10,
+            block_id="xyz",
+            status=TaskStatus.DONE,  # Completed in Obsidian
+            description="Review PR",
+            raw_line="- [x] Review PR",
+            modified_at=now.isoformat()  # String timestamp
+        )
+        
+        # Resolve conflicts
+        conflicts = resolver.resolve_conflicts(obs_task, rem_task)
+        
+        # Obsidian should win because it has newer timestamp
+        assert conflicts['status_winner'] == 'obs', \
+            f"Expected Obsidian to win status conflict (newer timestamp), got {conflicts['status_winner']}"
+    
+    def test_parse_time_handles_both_types(self):
+        """Test that _parse_time correctly handles both strings and datetime objects."""
+        from datetime import datetime, timezone
+        from obs_sync.sync.resolver import ConflictResolver
+        
+        resolver = ConflictResolver()
+        
+        # Test with datetime object
+        dt_obj = datetime(2025, 1, 15, 12, 30, 0, tzinfo=timezone.utc)
+        parsed_dt = resolver._parse_time(dt_obj)
+        assert parsed_dt == dt_obj, "Should return datetime object as-is"
+        
+        # Test with ISO string
+        iso_str = "2025-01-15T12:30:00+00:00"
+        parsed_str = resolver._parse_time(iso_str)
+        assert parsed_str == dt_obj, "Should parse ISO string correctly"
+        
+        # Test with ISO string with Z suffix
+        iso_z = "2025-01-15T12:30:00Z"
+        parsed_z = resolver._parse_time(iso_z)
+        assert parsed_z == dt_obj, "Should parse ISO string with Z suffix"
+        
+        # Test with None
+        parsed_none = resolver._parse_time(None)
+        assert parsed_none is None, "Should return None for None input"
+        
+        # Test with invalid string
+        parsed_invalid = resolver._parse_time("not-a-date")
+        assert parsed_invalid is None, "Should return None for invalid string"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
