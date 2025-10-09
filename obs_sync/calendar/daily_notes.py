@@ -2,6 +2,7 @@
 
 import os
 import re
+import json
 from datetime import date
 from typing import List, Optional, Dict, Any
 from .gateway import CalendarEvent
@@ -13,6 +14,8 @@ class DailyNoteManager:
     def __init__(self, vault_path: str):
         self.vault_path = vault_path
         self.daily_notes_dir = self._find_daily_notes_dir()
+        self._template_cache: Optional[str] = None
+        self._template_cache_path: Optional[str] = None
     
     def _find_daily_notes_dir(self) -> str:
         """Find the daily notes directory by looking for common patterns."""
@@ -63,8 +66,111 @@ class DailyNoteManager:
         
         return note_path
     
+    def _read_obsidian_daily_notes_settings(self) -> Optional[Dict[str, str]]:
+        """
+        Read Obsidian daily notes plugin settings.
+        
+        Checks both core daily-notes plugin and community periodic-notes plugin.
+        
+        Returns:
+            Dict with 'folder', 'format', and 'template' keys if found, else None
+        """
+        # Check core daily-notes plugin first
+        core_settings_path = os.path.join(
+            self.vault_path, '.obsidian', 'daily-notes.json'
+        )
+        
+        # Check community periodic-notes plugin as fallback
+        periodic_settings_path = os.path.join(
+            self.vault_path, '.obsidian', 'plugins', 'periodic-notes', 'data.json'
+        )
+        
+        for settings_path in [core_settings_path, periodic_settings_path]:
+            if os.path.exists(settings_path):
+                try:
+                    with open(settings_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    
+                    # Extract daily notes config
+                    # periodic-notes stores it under 'daily' key
+                    if 'daily' in data:
+                        config = data['daily']
+                    else:
+                        config = data
+                    
+                    # Return relevant fields
+                    return {
+                        'folder': config.get('folder', ''),
+                        'format': config.get('format', 'YYYY-MM-DD'),
+                        'template': config.get('template', '')
+                    }
+                except (json.JSONDecodeError, IOError, KeyError):
+                    # If one fails, try the next
+                    continue
+        
+        return None
+    
+    def _read_template_file(self, template_path: str) -> Optional[str]:
+        """
+        Read template file contents from the vault.
+        
+        Args:
+            template_path: Relative path to template (e.g., 'Templates/Daily Note')
+        
+        Returns:
+            Template contents if found and readable, else None
+        """
+        # Cache check
+        if self._template_cache_path == template_path and self._template_cache is not None:
+            return self._template_cache
+        
+        # Add .md extension if missing
+        if not template_path.endswith('.md'):
+            template_path += '.md'
+        
+        full_path = os.path.join(self.vault_path, template_path)
+        
+        if os.path.exists(full_path) and os.path.isfile(full_path):
+            try:
+                with open(full_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Cache for reuse
+                self._template_cache = content
+                self._template_cache_path = template_path
+                
+                return content
+            except IOError:
+                return None
+        
+        return None
+    
     def _create_new_daily_note(self, target_date: date) -> str:
-        """Create content for a new daily note."""
+        """
+        Create content for a new daily note.
+        
+        Uses Obsidian's configured template if available, otherwise falls back
+        to a default scaffold.
+        
+        Args:
+            target_date: The date for this daily note
+        
+        Returns:
+            Content for the new note
+        """
+        # Try to use Obsidian template
+        settings = self._read_obsidian_daily_notes_settings()
+        
+        if settings and settings.get('template'):
+            template_content = self._read_template_file(settings['template'])
+            if template_content:
+                # Template found, use it
+                # Note: We don't do any template variable substitution here
+                # (like {{date}}, {{time}}, etc.) because Obsidian would normally
+                # handle that. For our purposes, the raw template is fine.
+                return template_content
+        
+        # Fallback: hard-coded scaffold
         date_str = target_date.strftime("%Y-%m-%d")
         weekday = target_date.strftime("%A")
         

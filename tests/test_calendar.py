@@ -201,6 +201,202 @@ Other content
             # Should only have one insights section
             assert content.count("Task Insights") == 1
             assert "Old data here" not in content
+    
+    def test_template_present_scenario(self):
+        """Test that daily note uses Obsidian template when configured."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = Path(tmpdir)
+            
+            # Create directory structure
+            daily_notes_dir = vault_path / "Daily Notes"
+            daily_notes_dir.mkdir(parents=True)
+            
+            templates_dir = vault_path / "Templates"
+            templates_dir.mkdir(parents=True)
+            
+            obsidian_dir = vault_path / ".obsidian"
+            obsidian_dir.mkdir(parents=True)
+            
+            # Create template file
+            template_path = templates_dir / "Daily Note Template.md"
+            template_content = """# {{date}}
+
+## Morning Review
+- Energy level:
+- Top 3 priorities:
+
+## Work Log
+
+## Evening Reflection
+- Wins:
+- Learnings:
+"""
+            template_path.write_text(template_content)
+            
+            # Create daily-notes settings pointing to template
+            settings_path = obsidian_dir / "daily-notes.json"
+            settings = {
+                "folder": "Daily Notes",
+                "format": "YYYY-MM-DD",
+                "template": "Templates/Daily Note Template"
+            }
+            settings_path.write_text(json.dumps(settings))
+            
+            # Create daily note manager
+            manager = DailyNoteManager(str(vault_path))
+            target = date(2025, 1, 20)
+            
+            # Create insights to inject
+            insights = {
+                "completions": 3,
+                "overdue": 1,
+                "new_tasks": 2
+            }
+            
+            # This should create note with template
+            result_path = manager.update_insights_section(target, insights)
+            
+            content = Path(result_path).read_text()
+            
+            # Should have template content (not the hard-coded scaffold)
+            assert "Morning Review" in content
+            assert "Evening Reflection" in content
+            assert "Energy level:" in content
+            
+            # Should also have the injected insights
+            assert "Task Insights" in content
+            assert "Completed: 3" in content or "**Completed**: 3" in content
+    
+    def test_template_missing_fallback(self):
+        """Test fallback to scaffold when template not found."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = Path(tmpdir)
+            
+            daily_notes_dir = vault_path / "Daily Notes"
+            daily_notes_dir.mkdir(parents=True)
+            
+            obsidian_dir = vault_path / ".obsidian"
+            obsidian_dir.mkdir(parents=True)
+            
+            # Create settings pointing to non-existent template
+            settings_path = obsidian_dir / "daily-notes.json"
+            settings = {
+                "folder": "Daily Notes",
+                "format": "YYYY-MM-DD",
+                "template": "Templates/NonExistent"
+            }
+            settings_path.write_text(json.dumps(settings))
+            
+            manager = DailyNoteManager(str(vault_path))
+            target = date(2025, 1, 20)
+            
+            insights = {
+                "completions": 5,
+                "overdue": 0,
+                "new_tasks": 3
+            }
+            
+            result_path = manager.update_insights_section(target, insights)
+            content = Path(result_path).read_text()
+            
+            # Should use fallback scaffold
+            assert "# 2025-01-20" in content
+            assert "## Calendar" in content
+            assert "## Daily Review" in content
+            
+            # Should still have insights
+            assert "Task Insights" in content
+    
+    def test_no_template_configured(self):
+        """Test fallback to scaffold when no template is configured."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = Path(tmpdir)
+            
+            daily_notes_dir = vault_path / "Daily Notes"
+            daily_notes_dir.mkdir(parents=True)
+            
+            # No .obsidian settings at all
+            manager = DailyNoteManager(str(vault_path))
+            target = date(2025, 1, 20)
+            
+            events = [
+                CalendarEvent(
+                    event_id="1",
+                    title="Meeting",
+                    start_time=datetime(2025, 1, 20, 10, 0, tzinfo=timezone.utc),
+                    end_time=datetime(2025, 1, 20, 11, 0, tzinfo=timezone.utc),
+                    is_all_day=False,
+                    calendar_name="Work",
+                    location=None,
+                    notes=None
+                )
+            ]
+            
+            result_path = manager.update_daily_note(target, events)
+            content = Path(result_path).read_text()
+            
+            # Should use default scaffold
+            assert "# 2025-01-20" in content
+            assert "## Calendar" in content
+            assert "## Tasks" in content
+            assert "## Daily Review" in content
+            
+            # Should have calendar event
+            assert "Meeting" in content
+    
+    def test_periodic_notes_plugin_support(self):
+        """Test reading template from Periodic Notes plugin settings."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = Path(tmpdir)
+            
+            daily_notes_dir = vault_path / "Daily Notes"
+            daily_notes_dir.mkdir(parents=True)
+            
+            templates_dir = vault_path / "Templates"
+            templates_dir.mkdir(parents=True)
+            
+            plugins_dir = vault_path / ".obsidian" / "plugins" / "periodic-notes"
+            plugins_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create template
+            template_path = templates_dir / "Periodic Daily.md"
+            template_content = """# Daily Note {{date}}
+
+## Goals
+
+## Tasks
+"""
+            template_path.write_text(template_content)
+            
+            # Create periodic-notes settings
+            settings_path = plugins_dir / "data.json"
+            settings = {
+                "daily": {
+                    "folder": "Daily Notes",
+                    "format": "YYYY-MM-DD",
+                    "template": "Templates/Periodic Daily"
+                }
+            }
+            settings_path.write_text(json.dumps(settings))
+            
+            manager = DailyNoteManager(str(vault_path))
+            target = date(2025, 1, 20)
+            
+            insights = {
+                "completions": 2,
+                "overdue": 0,
+                "new_tasks": 1
+            }
+            
+            result_path = manager.update_insights_section(target, insights)
+            content = Path(result_path).read_text()
+            
+            # Should use periodic notes template
+            assert "## Goals" in content
+            assert "Daily Note" in content
+            
+            # Should have insights
+            assert "Task Insights" in content
 
 
 class TestCalendarImportTracker:
