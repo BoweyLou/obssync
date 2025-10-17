@@ -12,6 +12,7 @@ import json
 import os
 
 from ..core.models import ObsidianTask, RemindersTask, TaskStatus, SyncLink
+from ..utils.io import safe_read_json, safe_write_json
 
 
 @dataclass
@@ -334,12 +335,12 @@ class TaskDeduplicator:
             if not os.path.exists(links_path):
                 self.logger.debug("No links file exists at %s", links_path)
                 return
-            
-            # Load existing links
-            with open(links_path, 'r') as f:
-                data = json.load(f)
-                links = data.get('links', [])
-            
+
+            data = safe_read_json(links_path, default={'links': []})
+            links = []
+            if isinstance(data, dict):
+                links = [entry for entry in data.get('links', []) if isinstance(entry, dict)]
+
             # Filter out links for deleted tasks
             original_count = len(links)
             filtered_links = [
@@ -347,16 +348,16 @@ class TaskDeduplicator:
                 if link.get('obs_uuid') not in deleted_uuids
                 and link.get('rem_uuid') not in deleted_uuids
             ]
-            
+
             removed_count = original_count - len(filtered_links)
             if removed_count > 0:
-                # Write back the filtered links
-                with open(links_path, 'w') as f:
-                    json.dump({'links': filtered_links}, f, indent=2)
-                
-                self.logger.info(f"Cleaned up {removed_count} orphaned link(s) after deduplication")
+                payload = {'links': filtered_links}
+                if safe_write_json(links_path, payload):
+                    self.logger.info(f"Cleaned up {removed_count} orphaned link(s) after deduplication")
+                else:
+                    self.logger.error("Failed to persist cleaned links to %s", links_path)
             else:
                 self.logger.debug("No links needed cleanup after deduplication")
-        
+
         except Exception as e:
             self.logger.error(f"Failed to clean up links: {e}")

@@ -12,6 +12,7 @@ from ..reminders.tasks import RemindersTaskManager
 from .matcher import TaskMatcher
 from .resolver import ConflictResolver
 from ..utils.tags import merge_tags
+from ..utils.io import safe_read_json, safe_write_json
 import logging
 
 
@@ -1037,16 +1038,22 @@ class SyncEngine:
             links_path = os.path.expanduser(self.links_path)
             if not os.path.exists(links_path):
                 return []
-            
-            with open(links_path, 'r') as f:
-                data = json.load(f)
-                links = []
-                for link_data in data.get('links', []):
+
+            data = safe_read_json(links_path, default={'links': []})
+            if not isinstance(data, dict):
+                data = {'links': []}
+
+            links = []
+            for link_data in data.get('links', []):
+                try:
                     link = SyncLink.from_dict(link_data)
-                    links.append(link)
-                
-                self.logger.debug(f"Loaded {len(links)} existing links")
-                return links
+                except Exception as exc:
+                    self.logger.debug("Skipping malformed link: %s", exc)
+                    continue
+                links.append(link)
+
+            self.logger.debug(f"Loaded {len(links)} existing links")
+            return links
         except Exception as e:
             self.logger.error(f"Failed to load existing links: {e}")
             return []
@@ -1481,9 +1488,11 @@ class SyncEngine:
 
             # Load existing links if the file already exists
             if os.path.exists(links_path):
-                with open(links_path, 'r') as f:
-                    data = json.load(f)
+                data = safe_read_json(links_path, default={'links': []})
+                if isinstance(data, dict):
                     for entry in data.get('links', []):
+                        if not isinstance(entry, dict):
+                            continue
                         key = f"{entry.get('obs_uuid')}:{entry.get('rem_uuid')}"
                         if entry.get('obs_uuid') and entry.get('rem_uuid'):
                             existing_map[key] = entry
@@ -1509,9 +1518,10 @@ class SyncEngine:
                 filtered_map[key] = link.to_dict()
 
             # Persist the merged set back to disk
-            os.makedirs(os.path.dirname(links_path), exist_ok=True)
-            with open(links_path, 'w') as f:
-                json.dump({'links': list(filtered_map.values())}, f, indent=2)
+            payload = {'links': list(filtered_map.values())}
+            if not safe_write_json(links_path, payload):
+                self.logger.error("Failed to persist links to %s", links_path)
+                return
 
             self.logger.debug(f"Persisted {len(links)} active links (total {len(filtered_map)}) to {links_path}")
         except Exception as e:

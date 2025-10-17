@@ -12,7 +12,8 @@ from ..utils.prompts import (
     confirm_deduplication,
     display_duplicate_cluster,
     prompt_for_keeps,
-    show_deduplication_summary
+    show_deduplication_summary,
+    is_interactive,
 )
 from ..utils.insights import aggregate_insights, format_insight_cli_summary
 
@@ -754,6 +755,13 @@ def _run_deduplication(
                 print(f"  Would interactively resolve {total_would_delete} duplicate(s)")
             return {"obs_deleted": 0, "rem_deleted": 0}
         
+        interactive_session = is_interactive()
+        if not dry_run and not interactive_session:
+            if show_summary:
+                print("\n⏭️ Skipping deduplication for automated run (no interactive terminal).")
+            logger.debug("Skipping deduplication: non-interactive session detected.")
+            return {"obs_deleted": 0, "rem_deleted": 0}
+
         # For apply mode, check if user wants to run deduplication
         if not config.dedup_auto_apply:
             if not confirm_deduplication():

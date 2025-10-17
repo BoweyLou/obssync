@@ -1,9 +1,27 @@
 """Interactive prompting utilities for obs-sync CLI."""
 
+import builtins
+import sys
 from typing import List, Optional, Set, Union, Dict
 from datetime import datetime
 
 from ..core.models import ObsidianTask, RemindersTask, TaskStatus
+
+
+def is_interactive() -> bool:
+    """Return True when prompts can safely read from stdin."""
+    # If input() has been monkeypatched (e.g. during tests), assume interactivity.
+    if input is not builtins.input:  # type: ignore[name-defined]
+        return True
+
+    stdin = getattr(sys, "stdin", None)
+    if stdin is None:
+        return False
+
+    try:
+        return stdin.isatty()
+    except Exception:
+        return False
 
 
 def _format_date_safe(date_value):
@@ -110,13 +128,17 @@ def display_duplicate_cluster(cluster, obs_tasks_map=None, rem_tasks_map=None) -
 def prompt_for_keeps(cluster) -> Optional[List[int]]:
     """
     Prompt user to select which tasks to keep from a duplicate cluster.
-    
+
     Args:
         cluster: The duplicate cluster
-        
+
     Returns:
         List of 0-based indices to keep, or None to skip
     """
+    if not is_interactive():
+        print("   ℹ️ Non-interactive environment detected—skipping duplicate review.")
+        return None
+
     all_tasks = cluster.get_all_tasks()
     max_index = len(all_tasks)
     
@@ -172,10 +194,14 @@ def prompt_for_keeps(cluster) -> Optional[List[int]]:
 def confirm_deduplication() -> bool:
     """
     Ask user if they want to proceed with deduplication.
-    
+
     Returns:
         True if user wants to proceed, False otherwise
     """
+    if not is_interactive():
+        print("\nℹ️ Skipping interactive deduplication prompts (no TTY detected).")
+        return False
+
     response = input("\n❓ Run task deduplication? This interactive step lets you remove duplicates across Obsidian and Reminders (y/N): ").strip().lower()
     return response in ['y', 'yes']
 

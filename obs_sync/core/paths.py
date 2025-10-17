@@ -102,11 +102,40 @@ class PathManager:
         """Get the legacy configuration directory path."""
         return Path.home() / ".config" / self.LEGACY_DIR_NAME
     
-    @property
+    def _default_user_dir(self) -> Path:
+        """Platform-appropriate per-user data directory."""
+        if sys.platform == "darwin":
+            return Path.home() / "Library" / "Application Support" / self.LEGACY_DIR_NAME
+        if sys.platform.startswith("win"):
+            appdata = os.environ.get("APPDATA")
+            if appdata:
+                return Path(appdata) / self.LEGACY_DIR_NAME
+            return Path.home() / "AppData" / "Roaming" / self.LEGACY_DIR_NAME
+        return Path.home() / ".config" / self.LEGACY_DIR_NAME
+
+    def _path_is_cloud_synced(self, path: Path) -> bool:
+        """Heuristically detect cloud-synced volumes (iCloud, Dropbox, etc.)."""
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+
+        cloud_markers = [
+            "Library/Mobile Documents",  # iCloud Drive
+            "Library/CloudStorage",
+            "Dropbox",
+            "OneDrive",
+            "Google Drive",
+            "iCloud Drive",
+            "Box/Box",
+        ]
+        resolved_str = str(resolved)
+        return any(marker in resolved_str for marker in cloud_markers)
+
     def working_dir(self) -> Path:
         """
         Get the working directory for obs-sync data.
-        
+
         Priority order:
         1. OBS_SYNC_HOME environment variable (explicit override)
         2. .obs-sync/ in tool installation directory (if writable)
@@ -127,20 +156,23 @@ class PathManager:
             self.logger.debug(f"Using OBS_SYNC_HOME override: {env_path}")
             self._working_dir = env_path
             return self._working_dir
-        
+
         # Try tool installation directory
         tool_dir = self.tool_root / self.WORKING_DIR_NAME
-        
-        # Check if we can write to tool directory
-        # This will succeed for repo checkouts and fail for site-packages installs
-        if self._is_writable_location(tool_dir):
+        is_cloud_path = self._path_is_cloud_synced(tool_dir)
+
+        if not is_cloud_path and self._is_writable_location(tool_dir):
             self.logger.debug(f"Using writable tool directory: {tool_dir}")
             self._working_dir = tool_dir
         else:
-            # Fall back to legacy location for read-only installs
-            self.logger.debug(f"Tool directory not writable, using legacy: {self.legacy_dir}")
-            self._working_dir = self.legacy_dir
-        
+            if is_cloud_path:
+                fallback_dir = self._default_user_dir()
+                self.logger.debug(f"Tool directory is cloud-synced; using user data directory: {fallback_dir}")
+            else:
+                fallback_dir = self.legacy_dir
+                self.logger.debug(f"Tool directory not writable, using legacy: {fallback_dir}")
+            self._working_dir = fallback_dir
+
         return self._working_dir
     
     def _is_writable_location(self, path: Path) -> bool:
@@ -177,6 +209,9 @@ class PathManager:
             self.data_dir,
             self.backup_dir,
             self.log_dir,
+            self.documents_dir,
+            self.documents_inbox_dir,
+            self.documents_archive_dir,
         ]
         
         for directory in dirs_to_create:
@@ -197,6 +232,26 @@ class PathManager:
     def log_dir(self) -> Path:
         """Get the log directory."""
         return self.working_dir / "logs"
+
+    @property
+    def documents_dir(self) -> Path:
+        """Working directory for document ingestion artefacts."""
+        return self.working_dir / "documents"
+
+    @property
+    def documents_archive_dir(self) -> Path:
+        """Default archive directory for processed documents."""
+        return self.documents_dir / "archive"
+
+    @property
+    def documents_inbox_dir(self) -> Path:
+        """Default inbox directory for new handwritten notes."""
+        return self.documents_dir / "inbox"
+
+    @property
+    def documents_temp_dir(self) -> Path:
+        """Scratch directory for temporary OCR outputs."""
+        return self.documents_dir / "tmp"
     
     # File path properties
     @property

@@ -824,6 +824,7 @@ class SetupCommand:
         # Get log directory
         path_manager = get_path_manager()
         log_dir = path_manager.log_dir
+        working_dir = path_manager.working_dir
 
         # Unload existing agent if loaded
         if agent_loaded:
@@ -834,7 +835,7 @@ class SetupCommand:
 
         # Install the LaunchAgent plist
         print("\n  Installing LaunchAgent...")
-        success, error = install_agent(interval, obs_sync_path, log_dir)
+        success, error = install_agent(interval, obs_sync_path, log_dir, working_dir)
 
         if not success:
             print(f"  ✗ Failed to install LaunchAgent: {error}")

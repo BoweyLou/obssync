@@ -27,17 +27,19 @@ def generate_plist(
     interval_seconds: int,
     obs_sync_path: str,
     log_dir: Path,
+    working_dir: Path,
     logger: Optional[logging.Logger] = None
 ) -> Dict:
     """
     Generate LaunchAgent plist dictionary.
-    
+
     Args:
         interval_seconds: Interval in seconds between runs
         obs_sync_path: Full path to obs-sync executable
         log_dir: Directory for stdout/stderr logs
+        working_dir: Directory to use as OBS_SYNC_HOME / process working directory
         logger: Optional logger instance
-        
+
     Returns:
         Dictionary representing the plist structure
     """
@@ -46,10 +48,11 @@ def generate_plist(
     
     # Ensure log directory exists
     log_dir.mkdir(parents=True, exist_ok=True)
-    
+    working_dir.mkdir(parents=True, exist_ok=True)
+
     stdout_log = log_dir / "obs-sync-agent.stdout.log"
     stderr_log = log_dir / "obs-sync-agent.stderr.log"
-    
+
     plist = {
         "Label": AGENT_LABEL,
         "ProgramArguments": [obs_sync_path, "sync", "--apply"],
@@ -58,10 +61,12 @@ def generate_plist(
         "StandardOutPath": str(stdout_log),
         "StandardErrorPath": str(stderr_log),
         "EnvironmentVariables": {
-            "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-        }
+            "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "OBS_SYNC_HOME": str(working_dir),
+        },
+        "WorkingDirectory": str(working_dir),
     }
-    
+
     return plist
 
 
@@ -69,17 +74,19 @@ def install_agent(
     interval_seconds: int,
     obs_sync_path: str,
     log_dir: Path,
+    working_dir: Path,
     logger: Optional[logging.Logger] = None
 ) -> Tuple[bool, Optional[str]]:
     """
     Install (write) the LaunchAgent plist file.
     
     Args:
-        interval_seconds: Interval in seconds between runs
-        obs_sync_path: Full path to obs-sync executable
-        log_dir: Directory for logs
-        logger: Optional logger instance
-        
+    interval_seconds: Interval in seconds between runs
+    obs_sync_path: Full path to obs-sync executable
+    log_dir: Directory for logs
+    working_dir: Directory for process working directory and OBS_SYNC_HOME
+    logger: Optional logger instance
+
     Returns:
         (success, error_message) tuple
     """
@@ -89,9 +96,9 @@ def install_agent(
     try:
         plist_path = get_launchagent_path()
         plist_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        plist_data = generate_plist(interval_seconds, obs_sync_path, log_dir, logger)
-        
+
+        plist_data = generate_plist(interval_seconds, obs_sync_path, log_dir, working_dir, logger)
+
         with open(plist_path, "wb") as f:
             plistlib.dump(plist_data, f)
         
