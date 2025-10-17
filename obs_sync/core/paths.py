@@ -132,6 +132,7 @@ class PathManager:
         resolved_str = str(resolved)
         return any(marker in resolved_str for marker in cloud_markers)
 
+    @property
     def working_dir(self) -> Path:
         """
         Get the working directory for obs-sync data.
