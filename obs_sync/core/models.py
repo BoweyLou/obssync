@@ -120,6 +120,7 @@ class TaskStatus(Enum):
 
     TODO = "todo"
     DONE = "done"
+    CANCELLED = "cancelled"
 
 
 class Priority(Enum):
@@ -302,7 +303,12 @@ class RemindersTask:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> RemindersTask:
         status_value = data.get("status", "todo")
-        status = TaskStatus.DONE if status_value == "done" else TaskStatus.TODO
+        if status_value == "done":
+            status = TaskStatus.DONE
+        elif status_value == "cancelled":
+            status = TaskStatus.CANCELLED
+        else:
+            status = TaskStatus.TODO
 
         priority_value = data.get("priority")
         priority = None

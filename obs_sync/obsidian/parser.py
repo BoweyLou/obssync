@@ -11,7 +11,7 @@ from obs_sync.utils.date import parse_date
 
 
 # Regular expressions for parsing tasks
-TASK_RE = re.compile(r'^(\s*)[-*]\s+\[([xX ])\]\s+(.*)$')
+TASK_RE = re.compile(r'^(\s*)[-*]\s+\[([xX \-])\]\s+(.*)$')
 BLOCK_ID_RE = re.compile(r'\^([a-zA-Z0-9-]+)\s*$')
 DUE_DATE_RE = re.compile(r'📅\s*(\d{4}-\d{1,2}-\d{1,2})')
 COMPLETION_DATE_RE = re.compile(r'✅\s*(\d{4}-\d{1,2}-\d{1,2})')
@@ -37,9 +37,14 @@ def parse_markdown_task(line: str) -> Optional[Dict[str, Any]]:
     indent = match.group(1)
     status_char = match.group(2)
     content = match.group(3)
-    
+
     # Parse status
-    status = TaskStatus.DONE if status_char.lower() == 'x' else TaskStatus.TODO
+    if status_char.lower() == 'x':
+        status = TaskStatus.DONE
+    elif status_char == '-':
+        status = TaskStatus.CANCELLED
+    else:
+        status = TaskStatus.TODO
     
     # Extract block ID if present
     block_id = None
@@ -126,7 +131,12 @@ def format_task_line(
         Formatted markdown task line
     """
     # Status checkbox
-    status_char = 'x' if status == TaskStatus.DONE else ' '
+    if status == TaskStatus.DONE:
+        status_char = 'x'
+    elif status == TaskStatus.CANCELLED:
+        status_char = '-'
+    else:
+        status_char = ' '
     parts = [f"{indent}- [{status_char}]"]
     
     # Description

@@ -12,6 +12,9 @@ from .gateway import RemindersGateway
 class RemindersTaskManager:
     """Manages CRUD operations for Reminders tasks."""
 
+    CANCELLED_TAG = "cancelled"
+    CANCELLED_LIST_NAME = "Cancelled"
+
     def __init__(
         self,
         gateway: Optional[RemindersGateway] = None,
@@ -20,6 +23,38 @@ class RemindersTaskManager:
         self.gateway = gateway or RemindersGateway(logger=logger)
         self.logger = logger or logging.getLogger(__name__)
         self.include_completed = True  # Default to including completed tasks
+        self._cancelled_list_id: Optional[str] = None
+
+    def get_cancelled_list_id(self) -> Optional[str]:
+        """Get the ID of the Cancelled list, creating it if necessary.
+
+        Returns:
+            The list ID if found or created, None if creation fails
+        """
+        if self._cancelled_list_id:
+            return self._cancelled_list_id
+
+        # Check if the Cancelled list exists
+        try:
+            all_lists = self.gateway.get_lists()
+            for lst in all_lists:
+                if lst.get('name') == self.CANCELLED_LIST_NAME:
+                    self._cancelled_list_id = lst.get('id')
+                    self.logger.debug(f"Found existing Cancelled list: {self._cancelled_list_id}")
+                    return self._cancelled_list_id
+
+            # List doesn't exist - log a warning
+            # Note: EventKit doesn't provide an API to create lists programmatically
+            # Users must create the 'Cancelled' list manually in the Reminders app
+            self.logger.warning(
+                f"Cancelled list '{self.CANCELLED_LIST_NAME}' not found. "
+                "Please create this list manually in the Reminders app."
+            )
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Failed to get Cancelled list: {e}")
+            return None
 
     def list_tasks(self, list_ids: Optional[List[str]] = None, include_completed: Optional[bool] = None) -> List[RemindersTask]:
         """List all tasks from specified lists.
@@ -30,9 +65,25 @@ class RemindersTaskManager:
         """
         reminders = self.gateway.get_reminders(list_ids)
 
+        # Get the Cancelled list ID for status detection
+        cancelled_list_id = self.get_cancelled_list_id()
+
         tasks: List[RemindersTask] = []
         for rem in reminders:
-            status = TaskStatus.DONE if rem.completed else TaskStatus.TODO
+            # Determine status: check for cancelled tasks first
+            # A task is cancelled if it's in the Cancelled list AND has the cancelled tag
+            is_cancelled = (
+                cancelled_list_id is not None
+                and rem.list_id == cancelled_list_id
+                and self.CANCELLED_TAG in rem.tags
+            )
+
+            if is_cancelled:
+                status = TaskStatus.CANCELLED
+            elif rem.completed:
+                status = TaskStatus.DONE
+            else:
+                status = TaskStatus.TODO
 
             priority = None
             if rem.priority == "high":
@@ -80,13 +131,13 @@ class RemindersTaskManager:
             )
             tasks.append(task)
         
-        # Filter out completed tasks if requested
+        # Filter out completed and cancelled tasks if requested
         if include_completed is None:
             include_completed = self.include_completed
-            
+
         if not include_completed:
-            tasks = [t for t in tasks if t.status != TaskStatus.DONE]
-            self.logger.debug(f"Filtered to {len(tasks)} active tasks (excluded completed)")
+            tasks = [t for t in tasks if t.status not in (TaskStatus.DONE, TaskStatus.CANCELLED)]
+            self.logger.debug(f"Filtered to {len(tasks)} active tasks (excluded completed and cancelled)")
 
         return tasks
     
@@ -142,11 +193,67 @@ class RemindersTaskManager:
         if "status" in changes:
             status = changes["status"]
             if isinstance(status, TaskStatus):
-                updates["completed"] = status == TaskStatus.DONE
-                task.status = status
+                # Handle cancelled status specially
+                if status == TaskStatus.CANCELLED:
+                    # For cancelled tasks:
+                    # 1. Remove due date
+                    # 2. Add cancelled tag
+                    # 3. Move to Cancelled list
+                    updates["completed"] = False
+                    updates["due_date"] = None
+                    task.due_date = None
+
+                    # Add cancelled tag if not already present
+                    if self.CANCELLED_TAG not in task.tags:
+                        task.tags.append(self.CANCELLED_TAG)
+                    updates["tags"] = task.tags
+
+                    # Move to Cancelled list
+                    cancelled_list_id = self.get_cancelled_list_id()
+                    if cancelled_list_id:
+                        updates["calendar_id"] = cancelled_list_id
+                        task.calendar_id = cancelled_list_id
+                    else:
+                        self.logger.warning(
+                            f"Cannot move task '{task.title}' to Cancelled list - list not found. "
+                            "Please create a 'Cancelled' list in the Reminders app."
+                        )
+
+                    task.status = status
+                else:
+                    # For DONE or TODO status
+                    updates["completed"] = status == TaskStatus.DONE
+                    task.status = status
+
+                    # Remove cancelled tag if task is no longer cancelled
+                    if self.CANCELLED_TAG in task.tags:
+                        task.tags.remove(self.CANCELLED_TAG)
+                        updates["tags"] = task.tags
             elif isinstance(status, str):
-                updates["completed"] = status == "done"
-                task.status = TaskStatus.DONE if status == "done" else TaskStatus.TODO
+                if status == "cancelled":
+                    # Handle string "cancelled" status
+                    updates["completed"] = False
+                    updates["due_date"] = None
+                    task.due_date = None
+
+                    if self.CANCELLED_TAG not in task.tags:
+                        task.tags.append(self.CANCELLED_TAG)
+                    updates["tags"] = task.tags
+
+                    cancelled_list_id = self.get_cancelled_list_id()
+                    if cancelled_list_id:
+                        updates["calendar_id"] = cancelled_list_id
+                        task.calendar_id = cancelled_list_id
+
+                    task.status = TaskStatus.CANCELLED
+                else:
+                    updates["completed"] = status == "done"
+                    task.status = TaskStatus.DONE if status == "done" else TaskStatus.TODO
+
+                    # Remove cancelled tag
+                    if self.CANCELLED_TAG in task.tags:
+                        task.tags.remove(self.CANCELLED_TAG)
+                        updates["tags"] = task.tags
 
         if "due_date" in changes:
             task.due_date = changes["due_date"]

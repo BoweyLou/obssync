@@ -239,8 +239,8 @@ class SyncEngine:
             obs_tasks = obs_tasks_all
             rem_tasks = rem_tasks_all
         else:
-            obs_tasks = [t for t in obs_tasks_all if t.status != TaskStatus.DONE]
-            rem_tasks = [t for t in rem_tasks_all if t.status != TaskStatus.DONE]
+            obs_tasks = [t for t in obs_tasks_all if t.status not in (TaskStatus.DONE, TaskStatus.CANCELLED)]
+            rem_tasks = [t for t in rem_tasks_all if t.status not in (TaskStatus.DONE, TaskStatus.CANCELLED)]
         
         self.logger.info(f"Found {len(obs_tasks_all)} total Obsidian tasks ({len(obs_tasks)} for processing)")
         self.logger.info(f"Found {len(rem_tasks_all)} total Reminders tasks ({len(rem_tasks)} for processing)")
@@ -340,8 +340,8 @@ class SyncEngine:
         unmatched_rem_all = [t for t in unmatched_rem_all if t.uuid not in orphaned_rem_uuids]
 
         # Filter out completed tasks from counterpart creation
-        unmatched_obs = [t for t in unmatched_obs_all if t.status != TaskStatus.DONE]
-        unmatched_rem = [t for t in unmatched_rem_all if t.status != TaskStatus.DONE]
+        unmatched_obs = [t for t in unmatched_obs_all if t.status not in (TaskStatus.DONE, TaskStatus.CANCELLED)]
+        unmatched_rem = [t for t in unmatched_rem_all if t.status not in (TaskStatus.DONE, TaskStatus.CANCELLED)]
         
         self.logger.info(f"Found {len(unmatched_obs_all)} total unmatched Obsidian tasks ({len(unmatched_obs)} active)")
         self.logger.info(f"Found {len(unmatched_rem_all)} total unmatched Reminders tasks ({len(unmatched_rem)} active)")
@@ -405,7 +405,7 @@ class SyncEngine:
                     obs_tasks.extend(created_obs_tasks)
                 else:
                     obs_tasks.extend(
-                        [t for t in created_obs_tasks if t.status != TaskStatus.DONE]
+                        [t for t in created_obs_tasks if t.status not in (TaskStatus.DONE, TaskStatus.CANCELLED)]
                     )
             if created_rem_tasks:
                 rem_tasks_all.extend(created_rem_tasks)
@@ -413,7 +413,7 @@ class SyncEngine:
                     rem_tasks.extend(created_rem_tasks)
                 else:
                     rem_tasks.extend(
-                        [t for t in created_rem_tasks if t.status != TaskStatus.DONE]
+                        [t for t in created_rem_tasks if t.status not in (TaskStatus.DONE, TaskStatus.CANCELLED)]
                     )
 
         # Re-evaluate orphaned tasks now that new counterparts may have been created
@@ -620,7 +620,13 @@ class SyncEngine:
 
         # Status sync
         if conflicts["status_winner"] == "obs" and allow_rem_updates:
-            new_status = "done" if obs_task.status == TaskStatus.DONE else "todo"
+            # Map Obsidian status to Reminders
+            if obs_task.status == TaskStatus.DONE:
+                new_status = "done"
+            elif obs_task.status == TaskStatus.CANCELLED:
+                new_status = "cancelled"
+            else:
+                new_status = "todo"
             if not dry_run:
                 self.rem_manager.update_task(rem_task, {"status": new_status})
             self.changes_made["rem_updated"] += 1
@@ -628,7 +634,13 @@ class SyncEngine:
             self.logger.debug("Queued Reminders status update for %s", rem_task.title)
 
         elif conflicts["status_winner"] == "rem" and allow_obs_updates:
-            new_status = TaskStatus.DONE if rem_task.status == TaskStatus.DONE else TaskStatus.TODO
+            # Map Reminders status to Obsidian
+            if rem_task.status == TaskStatus.DONE:
+                new_status = TaskStatus.DONE
+            elif rem_task.status == TaskStatus.CANCELLED:
+                new_status = TaskStatus.CANCELLED
+            else:
+                new_status = TaskStatus.TODO
             if not dry_run:
                 self.obs_manager.update_task(obs_task, {"status": new_status})
             self.changes_made["obs_updated"] += 1
