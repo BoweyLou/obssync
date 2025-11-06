@@ -11,7 +11,7 @@ from obs_sync.utils.date import parse_date
 
 
 # Regular expressions for parsing tasks
-TASK_RE = re.compile(r'^(\s*)[-*]\s+\[([xX ])\]\s+(.*)$')
+TASK_RE = re.compile(r'^(\s*)[-*]\s+\[([xX\- ])\]\s+(.*)$')
 BLOCK_ID_RE = re.compile(r'\^([a-zA-Z0-9-]+)\s*$')
 DUE_DATE_RE = re.compile(r'📅\s*(\d{4}-\d{1,2}-\d{1,2})')
 COMPLETION_DATE_RE = re.compile(r'✅\s*(\d{4}-\d{1,2}-\d{1,2})')
@@ -39,7 +39,12 @@ def parse_markdown_task(line: str) -> Optional[Dict[str, Any]]:
     content = match.group(3)
     
     # Parse status
-    status = TaskStatus.DONE if status_char.lower() == 'x' else TaskStatus.TODO
+    if status_char.lower() == 'x':
+        status = TaskStatus.DONE
+    elif status_char == '-':
+        status = TaskStatus.CANCELLED
+    else:
+        status = TaskStatus.TODO
     
     # Extract block ID if present
     block_id = None
@@ -83,6 +88,10 @@ def parse_markdown_task(line: str) -> Optional[Dict[str, Any]]:
     tags = []
     for tag_match in TAG_RE.finditer(content):
         tags.append(f"#{tag_match.group(1)}")
+
+    # Derive cancelled status from tag marker
+    if any(tag.lower() == "#cancelled" for tag in tags):
+        status = TaskStatus.CANCELLED
     
     # Remove tags from description
     description = TAG_RE.sub('', content).strip()
@@ -126,7 +135,12 @@ def format_task_line(
         Formatted markdown task line
     """
     # Status checkbox
-    status_char = 'x' if status == TaskStatus.DONE else ' '
+    if status == TaskStatus.DONE:
+        status_char = 'x'
+    elif status == TaskStatus.CANCELLED:
+        status_char = '-'
+    else:
+        status_char = ' '
     parts = [f"{indent}- [{status_char}]"]
     
     # Description
@@ -151,8 +165,13 @@ def format_task_line(
         parts.append(f"📅 {due_date.strftime('%Y-%m-%d')}")
     
     # Tags
-    if tags:
-        for tag in tags:
+    normalized_tags = list(tags or [])
+    if status == TaskStatus.CANCELLED:
+        if not any(tag.lower() == "#cancelled" for tag in normalized_tags):
+            normalized_tags.append("#cancelled")
+
+    if normalized_tags:
+        for tag in normalized_tags:
             if not tag.startswith('#'):
                 tag = f"#{tag}"
             parts.append(tag)
