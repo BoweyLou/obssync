@@ -18,6 +18,7 @@ from obs_sync.commands.calendar import CalendarCommand
 from obs_sync.calendar.gateway import CalendarGateway, CalendarEvent
 from obs_sync.calendar.daily_notes import DailyNoteManager
 from obs_sync.calendar.tracker import CalendarImportTracker
+from obs_sync.utils.insights import INSIGHT_SECTION_START, INSIGHT_SECTION_END
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="EventKit only available on macOS")
@@ -167,6 +168,7 @@ class TestDailyNoteManager:
             content = Path(result_path).read_text()
             assert "Task Insights" in content
             assert "Completed: 5" in content or "**Completed**: 5" in content
+            assert content.rstrip().endswith(INSIGHT_SECTION_END)
     
     def test_insights_section_replacement(self):
         """Test that old insights section is replaced, not duplicated."""
@@ -201,6 +203,46 @@ Other content
             # Should only have one insights section
             assert content.count("Task Insights") == 1
             assert "Old data here" not in content
+            assert content.rstrip().endswith(INSIGHT_SECTION_END)
+
+    def test_calendar_section_precedes_insights(self):
+        """Calendar events should remain above the task insights snapshot."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = tmpdir
+            daily_notes_dir = Path(vault_path) / "Daily Notes"
+            daily_notes_dir.mkdir(parents=True)
+
+            manager = DailyNoteManager(vault_path)
+            target = date(2025, 1, 15)
+
+            events = [
+                CalendarEvent(
+                    event_id="1",
+                    title="Design Review",
+                    start_time=datetime(2025, 1, 15, 10, 0, tzinfo=timezone.utc),
+                    end_time=datetime(2025, 1, 15, 11, 0, tzinfo=timezone.utc),
+                    is_all_day=False,
+                    calendar_name="Work",
+                    location="HQ",
+                    notes=None
+                )
+            ]
+
+            manager.update_daily_note(target, events)
+
+            insights = {
+                "completions": 4,
+                "overdue": 1,
+                "new_tasks": 2
+            }
+
+            note_path = manager.update_insights_section(target, insights)
+            content = Path(note_path).read_text()
+
+            events_idx = content.index("## Today's Calendar Events")
+            insights_idx = content.index(INSIGHT_SECTION_START)
+            assert events_idx < insights_idx, "Calendar events should appear before insights"
+            assert content.rstrip().endswith(INSIGHT_SECTION_END)
     
     def test_template_present_scenario(self):
         """Test that daily note uses Obsidian template when configured."""
@@ -266,6 +308,7 @@ Other content
             # Should also have the injected insights
             assert "Task Insights" in content
             assert "Completed: 3" in content or "**Completed**: 3" in content
+            assert content.rstrip().endswith(INSIGHT_SECTION_END)
     
     def test_template_missing_fallback(self):
         """Test fallback to scaffold when template not found."""
@@ -306,6 +349,7 @@ Other content
             
             # Should still have insights
             assert "Task Insights" in content
+            assert content.rstrip().endswith(INSIGHT_SECTION_END)
     
     def test_no_template_configured(self):
         """Test fallback to scaffold when no template is configured."""
@@ -397,6 +441,7 @@ Other content
             
             # Should have insights
             assert "Task Insights" in content
+            assert content.rstrip().endswith(INSIGHT_SECTION_END)
 
 
 class TestCalendarImportTracker:

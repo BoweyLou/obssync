@@ -196,7 +196,7 @@ class DailyNoteManager:
         streaks: Optional[Dict[str, Any]] = None
     ) -> str:
         """
-        Update daily note with task insights snapshot.
+        Update daily note with task insights snapshot appended to the end.
         
         Args:
             target_date: Date for the daily note
@@ -227,8 +227,8 @@ class DailyNoteManager:
         # Remove existing insights section if present
         content = self._remove_section(content, INSIGHT_SECTION_START, INSIGHT_SECTION_END)
         
-        # Insert new insights section after the title
-        content = self._insert_section_after_title(content, insights_markdown)
+        # Append new insights section to the bottom for quick visibility of calendar events up top
+        content = self._append_section_to_end(content, insights_markdown)
         
         # Write back
         with open(note_path, 'w', encoding='utf-8') as f:
@@ -295,3 +295,16 @@ class DailyNoteManager:
         else:
             # Insert at very beginning
             return events_section + content
+
+    def _append_section_to_end(self, content: str, section: str) -> str:
+        """Append a section to the end of the note, replacing trailing whitespace."""
+        normalized_content = content.rstrip()
+        normalized_section = section.strip()
+
+        if not normalized_section:
+            return normalized_content if normalized_content else ""
+
+        if not normalized_content:
+            return normalized_section + "\n"
+
+        return normalized_content + "\n\n" + normalized_section + "\n"

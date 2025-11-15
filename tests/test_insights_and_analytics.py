@@ -597,6 +597,7 @@ def test_daily_note_injection():
         
         assert INSIGHT_SECTION_START in content, "Should include insights section"
         assert "Completed**: 5" in content, "Should include data"
+        assert content.rstrip().endswith(INSIGHT_SECTION_END), "Insights should be last section"
         
         # Second injection (should replace, not duplicate)
         insights['completions'] = 8
@@ -609,6 +610,7 @@ def test_daily_note_injection():
         count = content.count(INSIGHT_SECTION_START)
         assert count == 1, f"Insights section should appear exactly once, found {count}"
         assert "Completed**: 8" in content, "Should update with new data"
+        assert content.rstrip().endswith(INSIGHT_SECTION_END), "Insights should remain last after replacement"
         
         print("✓ Daily note injection tests passed")
 
