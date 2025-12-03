@@ -20,7 +20,9 @@ from obs_sync.commands import (
     InstallDepsCommand,
     MigrateCommand,
     UpdateCommand,
-    InsightsCommand
+    InsightsCommand,
+    ProcessCommand,
+    AutomationCommand,
 )
 
 
@@ -134,6 +136,36 @@ Examples:
         help='Export hygiene report to JSON file'
     )
     
+    # Document processing command
+    process_parser = subparsers.add_parser(
+        'process',
+        help='Process handwritten PDFs into Obsidian notes'
+    )
+    process_parser.add_argument(
+        '--apply',
+        action='store_true',
+        help='Apply changes (default is dry-run)'
+    )
+    process_parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Force dry-run even if --apply is provided'
+    )
+    process_parser.add_argument(
+        '--vault',
+        help='Limit processing to a specific vault id'
+    )
+    process_parser.add_argument(
+        '--watch',
+        action='append',
+        help='Only process documents from the named watch folder (may be repeated)'
+    )
+    process_parser.add_argument(
+        '--limit',
+        type=int,
+        help='Maximum number of documents to process in this run'
+    )
+    
     # Update command
     update_parser = subparsers.add_parser('update', help='Update obs-sync to latest version')
     update_parser.add_argument(
@@ -166,7 +198,25 @@ Examples:
         action='store_true',
         help='Force migration even if target files exist'
     )
-    
+
+    # Automation command (macOS LaunchAgent management)
+    automation_parser = subparsers.add_parser(
+        'automation',
+        help='Manage automation (macOS LaunchAgent)'
+    )
+    automation_parser.add_argument(
+        'action',
+        nargs='?',
+        choices=['status', 'repair', 'logs'],
+        default='status',
+        help='Action to perform (default: status)'
+    )
+    automation_parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Force repair even if agent appears healthy'
+    )
+
     args = parser.parse_args(argv)
     
     # Configure logging if verbose mode is enabled
@@ -223,6 +273,16 @@ Examples:
             cmd = InsightsCommand(config, verbose=args.verbose)
             success = cmd.run(export_json=args.export)
             
+        elif args.command == 'process':
+            cmd = ProcessCommand(config, verbose=args.verbose)
+            success = cmd.run(
+                apply_changes=args.apply,
+                dry_run=True if getattr(args, 'dry_run', False) else None,
+                vault=args.vault,
+                watch=args.watch,
+                limit=args.limit,
+            )
+            
         elif args.command == 'update':
             cmd = UpdateCommand(config, verbose=args.verbose)
             success = cmd.run(extras=args.extras, channel=args.channel)
@@ -241,7 +301,14 @@ Examples:
                 success = cmd.run(check_only=True)
                 if success:
                     print("\n💡 Run 'obs-sync migrate --apply' to perform the migration.")
-            
+
+        elif args.command == 'automation':
+            cmd = AutomationCommand(config, verbose=args.verbose)
+            success = cmd.run(
+                action=args.action,
+                force=getattr(args, 'force', False)
+            )
+
         else:
             print(f"Unknown command '{args.command}'.")
             return 1

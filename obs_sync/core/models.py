@@ -100,6 +100,339 @@ def deterministic_vault_id(normalized_path: str) -> str:
     return vault_id
 
 
+
+@dataclass
+class WatchFolderConfig:
+    """Configuration for ingesting handwritten documents from a source folder."""
+
+    name: str = "default"
+    source_path: Optional[str] = None
+    vault_id: Optional[str] = None
+    archive_path: Optional[str] = None
+    note_subdirectory: Optional[str] = None
+    recursive: bool = True
+    enabled: bool = True
+    tags: List[str] = field(default_factory=list)
+    ocr_backend: Optional[str] = None
+    classifier_overrides: Dict[str, Any] = field(default_factory=dict)
+    tag_overrides: Dict[str, Any] = field(default_factory=dict)
+
+    def apply_defaults(self) -> None:
+        """Resolve default locations and normalise configured paths."""
+        manager = get_path_manager()
+        if not self.source_path:
+            self.source_path = str(manager.documents_inbox_dir)
+        else:
+            self.source_path = _normalize_path(self.source_path)
+
+        if self.archive_path:
+            self.archive_path = _normalize_path(self.archive_path)
+        else:
+            self.archive_path = str(manager.documents_archive_dir)
+
+        if self.note_subdirectory:
+            normalized = self.note_subdirectory.strip()
+            self.note_subdirectory = normalized or None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "source_path": self.source_path,
+            "vault_id": self.vault_id,
+            "archive_path": self.archive_path,
+            "note_subdirectory": self.note_subdirectory,
+            "recursive": self.recursive,
+            "enabled": self.enabled,
+            "tags": list(self.tags),
+            "ocr_backend": self.ocr_backend,
+            "classifier_overrides": dict(self.classifier_overrides),
+            "tag_overrides": dict(self.tag_overrides),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "WatchFolderConfig":
+        if not data:
+            return cls()
+        return cls(
+            name=data.get("name", "default"),
+            source_path=data.get("source_path"),
+            vault_id=data.get("vault_id"),
+            archive_path=data.get("archive_path"),
+            note_subdirectory=data.get("note_subdirectory"),
+            recursive=data.get("recursive", True),
+            enabled=data.get("enabled", True),
+            tags=data.get("tags", []) or [],
+            ocr_backend=data.get("ocr_backend"),
+            classifier_overrides=data.get("classifier_overrides", {}) or {},
+            tag_overrides=data.get("tag_overrides", {}) or {},
+        )
+
+
+@dataclass
+class DocumentOCRConfig:
+    """Configuration for OCR backends and tuning parameters."""
+
+    backend: str = "tesseract"
+    language_packs: List[str] = field(default_factory=lambda: ["eng"])
+    retry_attempts: int = 1
+    retry_backoff_seconds: int = 5
+    timeout_seconds: int = 120
+    prefer_macos_vision: bool = False
+    temp_dir: Optional[str] = None
+
+    def apply_defaults(self) -> None:
+        manager = get_path_manager()
+        if self.temp_dir:
+            self.temp_dir = _normalize_path(self.temp_dir)
+        else:
+            self.temp_dir = str(manager.documents_temp_dir)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "backend": self.backend,
+            "language_packs": list(self.language_packs),
+            "retry_attempts": self.retry_attempts,
+            "retry_backoff_seconds": self.retry_backoff_seconds,
+            "timeout_seconds": self.timeout_seconds,
+            "prefer_macos_vision": self.prefer_macos_vision,
+            "temp_dir": self.temp_dir,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DocumentOCRConfig":
+        if not data:
+            return cls()
+        return cls(
+            backend=data.get("backend", "tesseract"),
+            language_packs=data.get("language_packs", ["eng"]),
+            retry_attempts=data.get("retry_attempts", 1),
+            retry_backoff_seconds=data.get("retry_backoff_seconds", 5),
+            timeout_seconds=data.get("timeout_seconds", 120),
+            prefer_macos_vision=data.get("prefer_macos_vision", False),
+            temp_dir=data.get("temp_dir"),
+        )
+
+
+@dataclass
+class ClassificationRuleConfig:
+    """Keyword-based classifier rules for routing documents."""
+
+    name: str = "default"
+    keywords: List[str] = field(default_factory=list)
+    destination_vault_id: Optional[str] = None
+    confidence_threshold: float = 0.5
+    tags: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "keywords": list(self.keywords),
+            "destination_vault_id": self.destination_vault_id,
+            "confidence_threshold": self.confidence_threshold,
+            "tags": list(self.tags),
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ClassificationRuleConfig":
+        if not data:
+            return cls()
+        return cls(
+            name=data.get("name", "default"),
+            keywords=data.get("keywords", []) or [],
+            destination_vault_id=data.get("destination_vault_id"),
+            confidence_threshold=data.get("confidence_threshold", 0.5),
+            tags=data.get("tags", []) or [],
+            metadata=data.get("metadata", {}) or {},
+        )
+
+
+@dataclass
+class TagPatternConfig:
+    """Patterns that translate detected phrases into Obsidian tags."""
+
+    name: str = "default"
+    pattern: str = ""
+    tags: List[str] = field(default_factory=list)
+    vault_id: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "pattern": self.pattern,
+            "tags": list(self.tags),
+            "vault_id": self.vault_id,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TagPatternConfig":
+        if not data:
+            return cls()
+        return cls(
+            name=data.get("name", "default"),
+            pattern=data.get("pattern", ""),
+            tags=data.get("tags", []) or [],
+            vault_id=data.get("vault_id"),
+            metadata=data.get("metadata", {}) or {},
+        )
+
+
+@dataclass
+class MarkdownTemplateConfig:
+    """Controls markdown note generation for processed documents."""
+
+    template_path: Optional[str] = None
+    include_frontmatter: bool = True
+    frontmatter_fields: List[str] = field(default_factory=lambda: [
+        "title",
+        "source",
+        "created",
+        "tags",
+    ])
+    default_note_folder: str = "Imported Notes"
+    filename_strategy: str = "timestamp"
+    insert_content_heading: bool = True
+
+    def apply_defaults(self) -> None:
+        if self.template_path:
+            self.template_path = _normalize_path(self.template_path)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "template_path": self.template_path,
+            "include_frontmatter": self.include_frontmatter,
+            "frontmatter_fields": list(self.frontmatter_fields),
+            "default_note_folder": self.default_note_folder,
+            "filename_strategy": self.filename_strategy,
+            "insert_content_heading": self.insert_content_heading,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MarkdownTemplateConfig":
+        if not data:
+            return cls()
+        return cls(
+            template_path=data.get("template_path"),
+            include_frontmatter=data.get("include_frontmatter", True),
+            frontmatter_fields=data.get("frontmatter_fields", [
+                "title",
+                "source",
+                "created",
+                "tags",
+            ]) or [
+                "title",
+                "source",
+                "created",
+                "tags",
+            ],
+            default_note_folder=data.get("default_note_folder", "Imported Notes"),
+            filename_strategy=data.get("filename_strategy", "timestamp"),
+            insert_content_heading=data.get("insert_content_heading", True),
+        )
+
+
+@dataclass
+class DocumentArchiveConfig:
+    """Persistence rules for processed PDF originals."""
+
+    destination: Optional[str] = None
+    retention_days: int = 180
+    move_original: bool = True
+    keep_source_filename: bool = True
+
+    def apply_defaults(self) -> None:
+        manager = get_path_manager()
+        if self.destination:
+            self.destination = _normalize_path(self.destination)
+        else:
+            self.destination = str(manager.documents_archive_dir)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "destination": self.destination,
+            "retention_days": self.retention_days,
+            "move_original": self.move_original,
+            "keep_source_filename": self.keep_source_filename,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DocumentArchiveConfig":
+        if not data:
+            return cls()
+        return cls(
+            destination=data.get("destination"),
+            retention_days=data.get("retention_days", 180),
+            move_original=data.get("move_original", True),
+            keep_source_filename=data.get("keep_source_filename", True),
+        )
+
+
+@dataclass
+class DocumentProcessingConfig:
+    """High-level configuration for the handwriting → Obsidian pipeline."""
+
+    enabled: bool = False
+    watch_folders: List[WatchFolderConfig] = field(default_factory=list)
+    ocr: DocumentOCRConfig = field(default_factory=DocumentOCRConfig)
+    classification_rules: List[ClassificationRuleConfig] = field(default_factory=list)
+    tag_patterns: List[TagPatternConfig] = field(default_factory=list)
+    markdown: MarkdownTemplateConfig = field(default_factory=MarkdownTemplateConfig)
+    archive: DocumentArchiveConfig = field(default_factory=DocumentArchiveConfig)
+    insights_enabled: bool = True
+    stats_history_limit: int = 30
+
+    def __post_init__(self) -> None:
+        self.apply_path_defaults()
+
+    def apply_path_defaults(self) -> None:
+        self.ocr.apply_defaults()
+        self.archive.apply_defaults()
+        for folder in self.watch_folders:
+            folder.apply_defaults()
+        self.markdown.apply_defaults()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "watch_folders": [folder.to_dict() for folder in self.watch_folders],
+            "ocr": self.ocr.to_dict(),
+            "classification_rules": [rule.to_dict() for rule in self.classification_rules],
+            "tag_patterns": [pattern.to_dict() for pattern in self.tag_patterns],
+            "markdown": self.markdown.to_dict(),
+            "archive": self.archive.to_dict(),
+            "insights_enabled": self.insights_enabled,
+            "stats_history_limit": self.stats_history_limit,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DocumentProcessingConfig":
+        if not data:
+            return cls()
+        watch_folders = [WatchFolderConfig.from_dict(entry) for entry in data.get("watch_folders", [])]
+        classification_rules = [
+            ClassificationRuleConfig.from_dict(entry)
+            for entry in data.get("classification_rules", [])
+        ]
+        tag_patterns = [
+            TagPatternConfig.from_dict(entry)
+            for entry in data.get("tag_patterns", [])
+        ]
+        return cls(
+            enabled=data.get("enabled", False),
+            watch_folders=watch_folders,
+            ocr=DocumentOCRConfig.from_dict(data.get("ocr", {})),
+            classification_rules=classification_rules,
+            tag_patterns=tag_patterns,
+            markdown=MarkdownTemplateConfig.from_dict(data.get("markdown", {})),
+            archive=DocumentArchiveConfig.from_dict(data.get("archive", {})),
+            insights_enabled=data.get("insights_enabled", True),
+            stats_history_limit=data.get("stats_history_limit", 30),
+        )
+
+
 def _date_to_iso(value: Optional[date]) -> Optional[str]:
     if value is None:
         return None
@@ -120,6 +453,7 @@ class TaskStatus(Enum):
 
     TODO = "todo"
     DONE = "done"
+    CANCELLED = "cancelled"
 
 
 class Priority(Enum):
@@ -301,8 +635,13 @@ class RemindersTask:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> RemindersTask:
-        status_value = data.get("status", "todo")
-        status = TaskStatus.DONE if status_value == "done" else TaskStatus.TODO
+        status_value = (data.get("status") or "todo").lower()
+        if status_value == TaskStatus.DONE.value:
+            status = TaskStatus.DONE
+        elif status_value in {"cancelled", "canceled"}:
+            status = TaskStatus.CANCELLED
+        else:
+            status = TaskStatus.TODO
 
         priority_value = data.get("priority")
         priority = None
@@ -403,6 +742,7 @@ class SyncConfig:
     calendar_ids: List[str] = field(default_factory=list)
     vault_mappings: List[Dict[str, str]] = field(default_factory=list)
     tag_routes: List[Dict[str, str]] = field(default_factory=list)
+    document_processing: DocumentProcessingConfig = field(default_factory=DocumentProcessingConfig)
     min_score: float = 0.75
     days_tolerance: int = 1
     include_completed: bool = False
@@ -417,7 +757,12 @@ class SyncConfig:
     sync_calendar_events: bool = False
     # Automation settings (macOS LaunchAgent)
     automation_enabled: bool = False
-    automation_interval: int = 3600  # Default: hourly
+    automation_interval: int = 3600  # Default: hourly (StartInterval)
+    automation_schedule_type: str = "interval"  # "interval" or "calendar"
+    automation_calendar_schedules: List[Dict[str, Any]] = field(default_factory=list)  # StartCalendarInterval entries
+    automation_env_vars: Dict[str, str] = field(default_factory=dict)  # Custom environment variables
+    automation_keep_alive: bool = False  # Restart on failure
+    automation_throttle_interval: int = 60  # Min seconds between restarts
     # Update settings
     update_channel: str = "stable"  # "stable" or "beta"
     # Insights and analytics settings
@@ -449,6 +794,11 @@ class SyncConfig:
             self.links_path = _normalize_path(self.links_path)
 
         self._normalize_tag_routes()
+
+        if self.document_processing is None:
+            self.document_processing = DocumentProcessingConfig()
+        else:
+            self.document_processing.apply_path_defaults()
 
     # ------------------------------------------------------------------
     # Convenience helpers
@@ -920,6 +1270,8 @@ class SyncConfig:
         )
 
         paths = data.get("paths", {})
+        documents_data = data.get("documents", {})
+        document_processing = DocumentProcessingConfig.from_dict(documents_data)
 
         # Pass None for paths not in config to use PathManager defaults
         config = cls(
@@ -930,6 +1282,7 @@ class SyncConfig:
             calendar_ids=data.get("calendar_ids", []),
             vault_mappings=vault_mappings,
             tag_routes=data.get("tag_routes", []),
+            document_processing=document_processing,
             min_score=min_score,
             days_tolerance=days_tolerance,
             include_completed=include_completed,
@@ -939,6 +1292,11 @@ class SyncConfig:
             sync_calendar_events=sync_settings.get("sync_calendar_events", False),
             automation_enabled=sync_settings.get("automation_enabled", False),
             automation_interval=sync_settings.get("automation_interval", 3600),
+            automation_schedule_type=sync_settings.get("automation_schedule_type", "interval"),
+            automation_calendar_schedules=sync_settings.get("automation_calendar_schedules", []),
+            automation_env_vars=sync_settings.get("automation_env_vars", {}),
+            automation_keep_alive=sync_settings.get("automation_keep_alive", False),
+            automation_throttle_interval=sync_settings.get("automation_throttle_interval", 60),
             update_channel=sync_settings.get("update_channel", "stable"),
             obsidian_index_path=paths.get(
                 "obsidian_index", data.get("obsidian_index_path", None)
@@ -970,6 +1328,10 @@ class SyncConfig:
             self.vaults[0].is_default = True
             self.default_vault_id = self.vaults[0].vault_id
 
+        if self.document_processing is None:
+            self.document_processing = DocumentProcessingConfig()
+        self.document_processing.apply_path_defaults()
+
         data = {
             "vaults": [
                 {
@@ -996,6 +1358,7 @@ class SyncConfig:
             "calendar_ids": self.calendar_ids,
             "vault_mappings": self.vault_mappings,
             "tag_routes": self.tag_routes,
+            "documents": self.document_processing.to_dict(),
             "sync": {
                 "min_score": self.min_score,
                 "days_tolerance": self.days_tolerance,
@@ -1004,6 +1367,11 @@ class SyncConfig:
                 "sync_calendar_events": self.sync_calendar_events,
                 "automation_enabled": self.automation_enabled,
                 "automation_interval": self.automation_interval,
+                "automation_schedule_type": self.automation_schedule_type,
+                "automation_calendar_schedules": self.automation_calendar_schedules,
+                "automation_env_vars": self.automation_env_vars,
+                "automation_keep_alive": self.automation_keep_alive,
+                "automation_throttle_interval": self.automation_throttle_interval,
                 "update_channel": self.update_channel,
             },
             "paths": {

@@ -702,7 +702,8 @@ class SetupCommand:
         from ..utils.launchd import (
             is_macos, is_agent_loaded, load_agent, unload_agent,
             install_agent, uninstall_agent, get_obs_sync_executable,
-            describe_interval, get_launchagent_path
+            describe_interval, describe_schedule, get_launchagent_path,
+            get_agent_status, CalendarSchedule, SCHEDULE_PRESETS
         )
         from ..core.paths import get_path_manager
 
@@ -713,8 +714,9 @@ class SetupCommand:
 
         # Show current status
         current_enabled = self.config.automation_enabled
+        current_schedule_type = self.config.automation_schedule_type
         current_interval = self.config.automation_interval
-        agent_loaded = is_agent_loaded()
+        agent_status = get_agent_status()
 
         if is_initial_setup:
             print("\n🤖 Automation (optional)")
@@ -723,12 +725,21 @@ class SetupCommand:
         else:
             print(f"\n🤖 Automation Settings (macOS LaunchAgent)")
             print(f"  Configuration: {('enabled' if current_enabled else 'disabled')}")
-            print(f"  Schedule: {describe_interval(current_interval)}")
-            print(f"  LaunchAgent: {('loaded' if agent_loaded else 'not loaded')}")
+            if current_schedule_type == "calendar" and self.config.automation_calendar_schedules:
+                schedules = [CalendarSchedule.from_dict(s) for s in self.config.automation_calendar_schedules]
+                print(f"  Schedule type: Calendar-based")
+                for sched in schedules:
+                    print(f"    - {sched.describe()}")
+            else:
+                print(f"  Schedule: {describe_interval(current_interval)}")
+            print(f"  Keep alive: {'Yes' if self.config.automation_keep_alive else 'No'}")
+            print(f"  LaunchAgent: {('loaded' if agent_status.is_loaded else 'not loaded')}")
+            if agent_status.is_outdated:
+                print(f"  ⚠️  Plist version outdated (run 'obs-sync automation repair' to update)")
 
-            if agent_loaded and not current_enabled:
+            if agent_status.is_loaded and not current_enabled:
                 print("\n⚠️  LaunchAgent is loaded but config shows disabled - they're out of sync")
-            elif not agent_loaded and current_enabled:
+            elif not agent_status.is_loaded and current_enabled:
                 print("\n⚠️  Config shows enabled but LaunchAgent is not loaded - they're out of sync")
 
         # Prompt for enable/disable
@@ -749,11 +760,11 @@ class SetupCommand:
             choice = default_choice
 
         if choice == 'n':
-            if current_enabled or agent_loaded:
+            if current_enabled or agent_status.is_loaded:
                 # Disable automation
                 print("\n🛑 Disabling automation...")
 
-                if agent_loaded:
+                if agent_status.is_loaded:
                     success, error = unload_agent()
                     if success:
                         print("✓ LaunchAgent unloaded.")
@@ -782,35 +793,124 @@ class SetupCommand:
 
         # User wants to enable automation
         print("\n⚙️ Configuring automation schedule...")
-        print("\nAvailable schedules:")
-        print("  1) Hourly (every 3600 seconds) [recommended]")
-        print("  2) Twice daily (every 43,200 seconds / 12 hours)")
-        print("  3) Custom interval (specify seconds)")
+        print("\nSchedule type:")
+        print("  1) Interval-based (runs every N seconds)")
+        print("  2) Calendar-based (runs at specific times)")
 
-        schedule_choice = input("Choose a schedule [default 1]: ").strip()
+        type_choice = input("Choose schedule type [1]: ").strip()
+        use_calendar = type_choice == '2'
 
-        if not schedule_choice or schedule_choice == '1':
-            interval = 3600  # Hourly
-        elif schedule_choice == '2':
-            interval = 43200  # Twice daily
-        elif schedule_choice == '3':
-            custom_input = input("Enter a custom interval in seconds: ").strip()
-            try:
-                interval = int(custom_input)
-                if interval < 60:
-                    print("⚠️ Minimum interval is 60 seconds. Using 60.")
-                    interval = 60
-                elif interval > 604800:  # 1 week
-                    print("⚠️ Maximum interval is 604800 seconds (one week). Using 604800.")
-                    interval = 604800
-            except ValueError:
-                print("⚠️ Invalid interval. Using default (3600 seconds).")
-                interval = 3600
+        interval_seconds = None
+        calendar_schedules = None
+
+        if use_calendar:
+            # Calendar-based scheduling
+            print("\n📅 Calendar Schedule Configuration")
+            print("\nPreset schedules:")
+            print("  1) Daily at 9:00 AM")
+            print("  2) Daily at 6:00 PM")
+            print("  3) Twice daily (9 AM and 6 PM)")
+            print("  4) Weekdays at 9:00 AM")
+            print("  5) Custom time")
+
+            preset_choice = input("Choose a preset [1]: ").strip()
+
+            if preset_choice == '2':
+                calendar_schedules = [CalendarSchedule(hour=18, minute=0)]
+            elif preset_choice == '3':
+                calendar_schedules = [
+                    CalendarSchedule(hour=9, minute=0),
+                    CalendarSchedule(hour=18, minute=0),
+                ]
+            elif preset_choice == '4':
+                calendar_schedules = [
+                    CalendarSchedule(hour=9, minute=0, weekday=i)
+                    for i in range(1, 6)  # Monday-Friday
+                ]
+            elif preset_choice == '5':
+                # Custom time
+                hour_input = input("Hour (0-23) [9]: ").strip()
+                minute_input = input("Minute (0-59) [0]: ").strip()
+                try:
+                    hour = int(hour_input) if hour_input else 9
+                    minute = int(minute_input) if minute_input else 0
+                    hour = max(0, min(23, hour))
+                    minute = max(0, min(59, minute))
+                except ValueError:
+                    hour, minute = 9, 0
+
+                print("\nRepeat on:")
+                print("  1) Every day")
+                print("  2) Weekdays only")
+                print("  3) Weekends only")
+                repeat_choice = input("Choose [1]: ").strip()
+
+                if repeat_choice == '2':
+                    calendar_schedules = [
+                        CalendarSchedule(hour=hour, minute=minute, weekday=i)
+                        for i in range(1, 6)
+                    ]
+                elif repeat_choice == '3':
+                    calendar_schedules = [
+                        CalendarSchedule(hour=hour, minute=minute, weekday=0),  # Sunday
+                        CalendarSchedule(hour=hour, minute=minute, weekday=6),  # Saturday
+                    ]
+                else:
+                    calendar_schedules = [CalendarSchedule(hour=hour, minute=minute)]
+            else:
+                # Default: daily at 9 AM
+                calendar_schedules = [CalendarSchedule(hour=9, minute=0)]
+
+            self.config.automation_schedule_type = "calendar"
+            self.config.automation_calendar_schedules = [s.to_dict() for s in calendar_schedules]
+            schedule_desc = describe_schedule(calendar_schedules=calendar_schedules)
+
         else:
-            print("⚠️ Invalid choice. Using default (hourly).")
-            interval = 3600
+            # Interval-based scheduling
+            print("\nAvailable intervals:")
+            print("  1) Hourly (every 3600 seconds) [recommended]")
+            print("  2) Twice daily (every 43,200 seconds / 12 hours)")
+            print("  3) Custom interval (specify seconds)")
 
-        print(f"\n  Selected: {describe_interval(interval)}")
+            schedule_choice = input("Choose a schedule [1]: ").strip()
+
+            if not schedule_choice or schedule_choice == '1':
+                interval_seconds = 3600  # Hourly
+            elif schedule_choice == '2':
+                interval_seconds = 43200  # Twice daily
+            elif schedule_choice == '3':
+                custom_input = input("Enter a custom interval in seconds: ").strip()
+                try:
+                    interval_seconds = int(custom_input)
+                    if interval_seconds < 60:
+                        print("⚠️ Minimum interval is 60 seconds. Using 60.")
+                        interval_seconds = 60
+                    elif interval_seconds > 604800:  # 1 week
+                        print("⚠️ Maximum interval is 604800 seconds (one week). Using 604800.")
+                        interval_seconds = 604800
+                except ValueError:
+                    print("⚠️ Invalid interval. Using default (3600 seconds).")
+                    interval_seconds = 3600
+            else:
+                print("⚠️ Invalid choice. Using default (hourly).")
+                interval_seconds = 3600
+
+            self.config.automation_schedule_type = "interval"
+            self.config.automation_interval = interval_seconds
+            self.config.automation_calendar_schedules = []
+            schedule_desc = describe_interval(interval_seconds)
+
+        print(f"\n  Selected: {schedule_desc}")
+
+        # Advanced options (non-initial setup only)
+        if not is_initial_setup:
+            print("\n🔧 Advanced options:")
+            keep_alive_choice = input(f"Enable keep-alive (restart on failure)? [{'Y/n' if self.config.automation_keep_alive else 'y/N'}]: ").strip().lower()
+            if keep_alive_choice == 'y':
+                self.config.automation_keep_alive = True
+            elif keep_alive_choice == 'n':
+                self.config.automation_keep_alive = False
+            # else keep current setting
 
         # Find obs-sync executable
         obs_sync_path = get_obs_sync_executable()
@@ -827,7 +927,7 @@ class SetupCommand:
         working_dir = path_manager.working_dir
 
         # Unload existing agent if loaded
-        if agent_loaded:
+        if agent_status.is_loaded:
             print("\n  Unloading existing LaunchAgent...")
             success, error = unload_agent()
             if not success:
@@ -835,7 +935,16 @@ class SetupCommand:
 
         # Install the LaunchAgent plist
         print("\n  Installing LaunchAgent...")
-        success, error = install_agent(interval, obs_sync_path, log_dir, working_dir)
+        success, error = install_agent(
+            interval_seconds=interval_seconds,
+            calendar_schedules=calendar_schedules,
+            obs_sync_path=obs_sync_path,
+            log_dir=log_dir,
+            working_dir=working_dir,
+            env_vars=self.config.automation_env_vars or None,
+            keep_alive=self.config.automation_keep_alive,
+            throttle_interval=self.config.automation_throttle_interval,
+        )
 
         if not success:
             print(f"  ✗ Failed to install LaunchAgent: {error}")
@@ -855,11 +964,11 @@ class SetupCommand:
 
         # Update config
         self.config.automation_enabled = True
-        self.config.automation_interval = interval
 
-        print(f"\n✅ Automation enabled! obs-sync will run {describe_interval(interval)}")
+        print(f"\n✅ Automation enabled! obs-sync will run {schedule_desc}")
         print(f"   Logs: {log_dir}/obs-sync-agent.stdout.log")
         print(f"         {log_dir}/obs-sync-agent.stderr.log")
+        print(f"\n💡 Tip: Run 'obs-sync automation status' to check agent health")
 
     def _amend_automation(self) -> None:
         """Amend automation settings (macOS LaunchAgent)."""

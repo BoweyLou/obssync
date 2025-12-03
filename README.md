@@ -363,7 +363,7 @@ obs-sync recognises standard Obsidian task syntax:
 ```markdown
 ## My Tasks
 
-- [x] Basic task ^dol2xsgo
+- [x] Basic task #from-reminders ^dol2xsgo
 - [x] Completed task
 - [x] Task with due date 📅 2024-10-15 ^bqfydgq2
 - [x] High priority task ⏫ ^6h67ikgt
@@ -451,10 +451,23 @@ obs-sync setup --reconfigure
 # Select "Automation settings (macOS LaunchAgent)"
 ```
 
-**Available schedules:**
-- **Hourly** (every 3600 seconds) - Default, recommended
-- **Twice daily** (every 43200 seconds / 12 hours)
-- **Custom interval** - Specify any interval in seconds (60-604800)
+**Schedule types:**
+
+1. **Interval-based (StartInterval)** - Run every N seconds
+   - Hourly (3600s) - Default, recommended
+   - Twice daily (43200s / 12 hours)
+   - Custom interval (60-604800 seconds)
+
+2. **Calendar-based (StartCalendarInterval)** - Run at specific times
+   - Daily at 9:00 AM
+   - Daily at 6:00 PM
+   - Twice daily (9 AM and 6 PM)
+   - Weekdays at 9:00 AM
+   - Custom time configuration
+
+**Advanced options:**
+- **Keep-alive**: Automatically restart on failure (KeepAlive with ThrottleInterval)
+- **Custom environment variables**: Set additional env vars for the agent
 
 **What happens:**
 - LaunchAgent runs `obs-sync sync --apply` on schedule
@@ -465,22 +478,53 @@ obs-sync setup --reconfigure
 
 **Managing automation:**
 ```bash
+# Check automation status (detailed)
+obs-sync automation status
+
+# Repair automation agent (unload, reinstall, reload)
+obs-sync automation repair
+
+# View recent logs
+obs-sync automation logs
+
 # Enable/disable or change schedule
 obs-sync setup --reconfigure
 # Select option 8 (Automation settings)
+```
 
-# Check LaunchAgent status
-launchctl list | grep obs-sync
+**Manual launchctl commands:**
+```bash
+# Check if agent is loaded
+launchctl list | grep com.obs-sync.sync-agent
+
+# Manually load agent
+launchctl load ~/Library/LaunchAgents/com.obs-sync.sync-agent.plist
+
+# Manually unload agent
+launchctl unload ~/Library/LaunchAgents/com.obs-sync.sync-agent.plist
+
+# Remove agent completely
+launchctl unload ~/Library/LaunchAgents/com.obs-sync.sync-agent.plist
+rm ~/Library/LaunchAgents/com.obs-sync.sync-agent.plist
 
 # View recent logs
-tail -f ~/Library/Application\ Support/obs-tools/logs/obs-sync-agent.stdout.log
+tail -50 ~/Library/Application\ Support/obs-tools/logs/obs-sync-agent.stdout.log
+tail -50 ~/Library/Application\ Support/obs-tools/logs/obs-sync-agent.stderr.log
 ```
+
+**Sleep/wake caveats:**
+- **StartInterval**: Runs at the specified interval regardless of sleep. If your Mac is asleep during a scheduled run, it will run immediately upon wake.
+- **StartCalendarInterval**: If the Mac is asleep at the scheduled time, the job runs once immediately when the Mac wakes up (not multiple times for missed runs).
+- For laptops that sleep frequently, consider using **interval-based** scheduling with a reasonable interval (1-4 hours) to ensure syncs happen throughout the day.
+- If you need guaranteed runs at specific times, keep your Mac awake during those times or use a tool like `caffeinate`.
 
 **Important notes:**
 - macOS only - gracefully skipped on other platforms
 - Automation disabled by default - opt-in through setup
 - Agent plist located at `~/Library/LaunchAgents/com.obs-sync.sync-agent.plist`
 - Disabling automation unloads agent and removes plist
+- Run `obs-sync automation status` to check agent health
+- Run `obs-sync automation repair` to fix out-of-sync or outdated agents
 
 ### Custom Configuration
 
@@ -644,12 +688,32 @@ export OBS_TOOLS_HOME=~/custom-sync-location
 
 ### Automation not running (macOS)
 
-**Check LaunchAgent status:**
+**Quick diagnosis:**
+```bash
+# Use the built-in status command
+obs-sync automation status
+
+# This shows:
+# - Whether the agent is installed and loaded
+# - Current schedule configuration
+# - Any issues detected (outdated plist, config mismatch)
+# - Suggested fixes
+```
+
+**Quick fix:**
+```bash
+# Repair the agent (unload, reinstall, reload)
+obs-sync automation repair --force
+```
+
+**Manual diagnosis:**
 ```bash
 # Check if agent is loaded
 launchctl list | grep com.obs-sync.sync-agent
 
 # Check recent logs
+obs-sync automation logs
+# or manually:
 tail -50 ~/Library/Application\ Support/obs-tools/logs/obs-sync-agent.stdout.log
 tail -50 ~/Library/Application\ Support/obs-tools/logs/obs-sync-agent.stderr.log
 ```

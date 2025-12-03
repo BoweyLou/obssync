@@ -28,22 +28,22 @@ class TestAutomationToggles:
             vaults=[Vault(name="Test", path="/tmp/test", vault_id="v1")],
             automation_enabled=False
         )
-        
-        with patch('obs_sync.commands.setup.install_agent') as mock_install:
-            with patch('obs_sync.commands.setup.load_agent') as mock_load:
+
+        with patch('obs_sync.utils.launchd.install_agent') as mock_install:
+            with patch('obs_sync.utils.launchd.load_agent') as mock_load:
                 mock_install.return_value = (True, None)
                 mock_load.return_value = (True, None)
-                
+
                 cmd = SetupCommand(config, verbose=True)
-                
+
                 # Simulate enabling automation
                 config.automation_enabled = True
                 config.automation_interval = 3600
-                
+
                 # Verify the toggles would trigger installation
                 # (In real flow, this happens in _prompt_automation_setup)
                 assert config.automation_enabled is True
-    
+
     @pytest.mark.skipif(sys.platform != "darwin", reason="LaunchAgent only on macOS")
     def test_automation_disable_unloads_agent(self):
         """Test that disabling automation unloads LaunchAgent."""
@@ -52,15 +52,15 @@ class TestAutomationToggles:
             automation_enabled=True,
             automation_interval=3600
         )
-        
-        with patch('obs_sync.commands.setup.unload_agent') as mock_unload:
+
+        with patch('obs_sync.utils.launchd.unload_agent') as mock_unload:
             mock_unload.return_value = (True, None)
-            
+
             cmd = SetupCommand(config, verbose=True)
-            
+
             # Disable automation
             config.automation_enabled = False
-            
+
             # Verify flag is disabled
             assert config.automation_enabled is False
     

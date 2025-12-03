@@ -9,6 +9,8 @@ from .install_deps import InstallDepsCommand
 from .migrate import MigrateCommand
 from .insights import InsightsCommand
 from .update import UpdateCommand
+from .process import ProcessCommand
+from .automation import AutomationCommand
 
 __all__ = [
     'SetupCommand',
@@ -17,5 +19,7 @@ __all__ = [
     'InstallDepsCommand',
     'MigrateCommand',
     'InsightsCommand',
-    'UpdateCommand'
+    'UpdateCommand',
+    'ProcessCommand',
+    'AutomationCommand',
 ]

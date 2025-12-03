@@ -12,7 +12,9 @@ from .prompts import (
 from .launchd import (
     is_macos, get_launchagent_path, install_agent, uninstall_agent,
     load_agent, unload_agent, is_agent_loaded, get_obs_sync_executable,
-    describe_interval
+    describe_interval, describe_schedule, get_agent_status, repair_agent,
+    compute_plist_checksum, CalendarSchedule, AgentStatus, SCHEDULE_PRESETS,
+    PLIST_VERSION, AGENT_LABEL
 )
 from .macos import set_process_name
 
@@ -44,6 +46,15 @@ __all__ = [
     'is_agent_loaded',
     'get_obs_sync_executable',
     'describe_interval',
+    'describe_schedule',
+    'get_agent_status',
+    'repair_agent',
+    'compute_plist_checksum',
+    'CalendarSchedule',
+    'AgentStatus',
+    'SCHEDULE_PRESETS',
+    'PLIST_VERSION',
+    'AGENT_LABEL',
     # macOS helpers
     'set_process_name'
 ]
